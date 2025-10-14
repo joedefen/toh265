@@ -9,6 +9,7 @@ import re
 import time
 from types import SimpleNamespace
 from datetime import timedelta
+import send2trash
 # pylint: disable=too-many-locals,line-too-long,broad-exception-caught
 
 
@@ -18,7 +19,7 @@ class Converter:
     TARGET_WIDTH = 1920
     TARGET_HEIGHT = 1080
     TARGET_CODECS = ['h265', 'hevc']
-    MAX_BITRATE_KBPS = 2800 # about 20MB/min (or 800MB for 40m)
+    MAX_BITRATE_KBPS = 2100 # about 15MB/min (or 600MB for 40m)
 
     # --- Configuration ---
     OUTPUT_CRF = 24          # Target CRF for new x265 encodes
@@ -89,6 +90,8 @@ class Converter:
             ns.codec = video_stream.get('codec_name', 'unk_codec')
             ns.bitrate = int(int(metadata["format"].get('bit_rate', 0))/1000) # in KBPS
             ns.duration = float(metadata["format"].get('duration', 0.0)) # in KBPS
+            ns.size = self.get_file_size_readable(file_path)
+
             return ns
 
         except FileNotFoundError:
@@ -130,35 +133,38 @@ class Converter:
         height = self.probe.height
         codec = self.probe.codec
         bitrate = self.probe.bitrate
+        size = self.probe.size
 
         # 1. Check Resolution
         # Assuming resolution check is 'at least' the target
-        res_ok = (width is not None and width >= self.TARGET_WIDTH) and \
-                 (height is not None and height >= self.TARGET_HEIGHT)
+        res_ok = bool(height is not None and height <= self.TARGET_HEIGHT)
 
         # 2. Check Codec
-        codec_ok = (codec is not None and codec.lower() in self.TARGET_CODECS)
+        # codec_ok = (codec is not None and codec.lower() in self.TARGET_CODECS)
 
         # 3. Check Bitrate (with tolerance)
         bitrate_ok = bool(bitrate <= self.MAX_BITRATE_KBPS)
+        
+        summary = f'  {width}x{height} {codec} {bitrate:.0f} kbps {size}'
 
-        if res_ok and codec_ok and bitrate_ok:
-            print(f"... already meets conversion criteria:\n"
-                  f"  Res: {width}x{height} ({res_ok}), Codec: {codec} ({codec_ok}),\n"
-                  f"  Bitrate: {bitrate:.2f} kbps ({bitrate_ok})")
+        if res_ok and bitrate_ok:
+            print(f'     ok: {summary}')
             return True
         else:
-            print(f"... needs conversion.\n"
-                  f"  (Res: {width}x{height} - Target >= {self.TARGET_WIDTH}x{self.TARGET_HEIGHT},\n"
-                  f"  Codec: {codec} - Target '{self.TARGET_CODECS}',\n"
-                  f"  Bitrate: {bitrate} kbps - Target: <= {self.MAX_BITRATE_KBPS}")
+            why = '' if res_ok else f'>{self.TARGET_HEIGHT}p '
+            why += '' if bitrate_ok else f'>{self.MAX_BITRATE_KBPS} kbps'
+            print(f'CONVERT: {summary}: {why}')
             return False
-
 
     def monitor_transcode_progress(self, input_file, temp_file, duration_seconds):
         """
         Runs the FFmpeg transcode command and monitors its output for a non-scrolling display.
         """
+        def trim0(str):
+            if str.startswith('0:'):
+                return str[2:]
+            return str
+
         # Define the FFmpeg command
         ffmpeg_cmd = [
             'ffmpeg',
@@ -188,7 +194,7 @@ class Converter:
             )
 
             last_update_time = start_time
-            total_duration_formatted = str(timedelta(seconds=int(duration_seconds)))
+            total_duration_formatted = trim0(str(timedelta(seconds=int(duration_seconds))))
 
             # --- Progress Monitoring Loop ---
             # Read stderr line-by-line until the process finishes
@@ -223,7 +229,7 @@ class Converter:
                             # Time Remaining calculation (rough estimate)
                             # Remaining Time = (Total Time - Encoded Time) / Speed
                             remaining_seconds = (duration_seconds - time_encoded_seconds) / speed
-                            remaining_time_formatted = str(timedelta(seconds=int(remaining_seconds)))
+                            remaining_time_formatted = trim0(str(timedelta(seconds=int(remaining_seconds))))
                         else:
                             remaining_time_formatted = "N/A"
                     else:
@@ -232,12 +238,13 @@ class Converter:
 
                     # 3. Format the output line
                     # \r at the start makes the console cursor go back to the beginning of the line
+                    cur_time_formatted = trim0(str(timedelta(seconds=int(time_encoded_seconds))))
                     progress_line = (
-                        f"\r{timedelta(seconds=elapsed_time_sec)} | "
-                        f"[{percent_complete:5.1f}%] | "
+                        f"\r{trim0(str(timedelta(seconds=elapsed_time_sec)))} | "
+                        f"{percent_complete:.1f}% | "
                         f"ETA {remaining_time_formatted} | "
                         f"Speed {speed:.1f}x | "
-                        f"Time {str(timedelta(seconds=int(time_encoded_seconds))) or '??'}/{total_duration_formatted}"
+                        f"Time {cur_time_formatted}/{total_duration_formatted}"
                     )
 
                     # 4. Print and reset timer
@@ -258,6 +265,54 @@ class Converter:
             print(f"\r{input_file}: Transcoding FAILED (Return Code: {process.returncode})")
             # In a real script, you'd save or display the full error output from stderr here.
             return False
+
+    @staticmethod
+    def human_readable_size(size_bytes: int) -> str:
+        """
+        Converts a raw size in bytes to a human-readable string (e.g., 10 KB, 5.5 MB).
+        Returns:
+            A string representing the size in human-readable format.
+        """
+        if size_bytes is None:
+            return "0 Bytes"
+        
+        if size_bytes == 0:
+            return "0 Bytes"
+        
+        # Define the unit list (using 1024 for base-2, which is standard for file sizes)
+        size_names = ("Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+        
+        # Use a loop to find the appropriate unit index (i)
+        i = 0
+        size = size_bytes
+        while size >= 1024 and i < len(size_names) - 1:
+            size /= 1024
+            i += 1
+        
+        # Format the number, keeping two decimal places if it's not the 'Bytes' unit
+        if i == 0:
+            return f"{size_bytes} {size_names[i]}"
+        else:
+            return f"{size:.2f} {size_names[i]}"
+
+    @staticmethod
+    def get_file_size_readable(filepath: str) -> str:
+        """
+        Gets the size of a given file path and returns it in a human-readable format.
+        Returns:
+            A string with the file size (e.g., "1.2 MB") or an error message.
+        """
+        try:
+            # Get the size in bytes
+            size_bytes = os.path.getsize(filepath)
+            
+            # Convert bytes to human-readable format
+            return Converter.human_readable_size(size_bytes)
+            
+        except FileNotFoundError:
+            return f"Error: File not found at '{filepath}'"
+        except Exception as e:
+            return f"Error getting file size: {e}"
 
 
     def is_valid_video_file(self, filename):
@@ -428,6 +483,8 @@ class Converter:
         # 1. Quality Check
         if self.already_converted():
             return
+        if self.opts.info_only:
+            return
 
         # --- File names for the safe replacement process ---
         do_rename, standard_name = self.standard_name(input_file)
@@ -449,19 +506,26 @@ class Converter:
             try:
                 # Rename original to backup
                 if not dry_run:
-                    os.rename(input_file, orig_backup_file)
-                print(f"{would}Move Original to {orig_backup_file}.")
+                    if self.opts.keep_backup:
+                        os.rename(input_file, orig_backup_file)
+                    else:
+                        send2trash.send2trash(input_file)
+                else:
+                    if self.opts.keep_backup:
+                        print(f"{would}Move Original to {orig_backup_file}")
+                    else:
+                        print(f"{would}Trash {input_file}")
 
                 # Rename temporary file to the original filename
                 if not dry_run:
                     os.rename(temp_file, standard_name)
-                print(f"SUCCESS: {would}Replace {standard_name} w converted video")
+                print(f"OK: {would}Replace {standard_name}")
 
                 if do_rename:
                     self.bulk_rename(input_file, standard_name)
 
             except OSError as e:
-                print(f"CRITICAL ERROR during file swap for {input_file}: {e}")
+                print(f"ERROR during swap of {input_file}: {e}")
                 print(f"Original: {orig_backup_file}, New: {temp_file}. Manual cleanup required.")
         else:
             # Transcoding failed, delete the temporary file
@@ -511,6 +575,10 @@ def main(args=None):
     """
     parser = argparse.ArgumentParser(
         description="A script that accepts dry-run, force, and debug flags.")
+    parser.add_argument('-b', '--keep-backup', action='store_true',
+                help='rather than recycle, rename to ORIG.{videofile}')
+    parser.add_argument('-i', '--info-only', action='store_true',
+                help='print just basic info')
     parser.add_argument('-n', '--dry-run', action='store_true',
                 help='Perform a trial run with no changes made.')
     parser.add_argument('-f', '--force', action='store_true',
