@@ -1,354 +1,464 @@
 #!/usr/bin/env python3
-import os
+""" TBD """
 import sys
-import subprocess
-import shlex
-import re
-import time
-import glob
-from datetime import timedelta
-import ffmpeg
-
-# --- Conversion Criteria Constants (Customize these) ---
-TARGET_WIDTH = 1920
-TARGET_HEIGHT = 1080
-TARGET_CODECS = ['h265', 'hevc']
-MAX_BITRATE_KBPS = 2800 # about 20MB/min (or 800MB for 40m)
-
-# --- End Criteria Constants ---
-
-
-# --- Configuration ---
-OUTPUT_CRF = 24          # Target CRF for new x265 encodes
-PROGRESS_UPDATE_INTERVAL = 3  # Seconds between print updates
-
-# Regex to find FFmpeg progress lines (from stderr)
-# Looks for 'frame=  XXXXX' and 'time=00:00:00.00' and 'speed=XX.XXx'
-PROGRESS_RE = re.compile(
-    r"frame=\s*(\d+)\s+.*time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})\s+.*speed=\s*(\d+\.\d+)x"
-)
-
-# Regex to find the video stream's duration from ffprobe
-DURATION_RE = re.compile(r'"duration":\s*"(\d+\.\d+)"')
-
-# ==============================================================================
-# UTILITY FUNCTIONS
-# ==============================================================================
-
-def get_video_duration(file_path):
-    """Uses ffprobe to get the total duration of the video stream in seconds."""
-    cmd = shlex.split(f'ffprobe -v error -select_streams v:0 -show_entries format=duration -of json "{file_path}"')
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        match = DURATION_RE.search(result.stdout)
-        if match:
-            return float(match.group(1))
-    except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
-        print(f"Error getting duration for {file_path} with ffprobe: {e}")
-    return 0.0
+import os
+import argparse
 import subprocess
 import json
-import os
-
-def get_video_metadata(file_path):
-    """
-    Extracts video metadata using ffprobe and returns it as a Python dictionary.
-
-    Args:
-        file_path (str): The path to the video file.
-
-    Returns:
-        dict or None: A dictionary containing the ffprobe output, or None if an
-                      error occurs (e.g., file not found, ffprobe fails).
-    """
-    # Check if the file exists
-    if not os.path.exists(file_path):
-        print(f"Error: File not found at '{file_path}'")
-        return None
-
-    # ffprobe command to output format and stream information in JSON format
-    # -v error: Suppress all non-error messages (like the banner)
-    # -print_format json: Output in JSON format
-    # -show_format: Include container format information
-    # -show_streams: Include stream (video, audio, etc.) information
-    command = [
-        'ffprobe',
-        '-v', 'error',
-        '-print_format', 'json',
-        '-show_format',
-        '-show_streams',
-        file_path
-    ]
-
-    try:
-        # Execute the command
-        result = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True  # Raise a CalledProcessError for non-zero exit codes
-        )
-
-        # Parse the JSON output
-        ### print(result.stdout)
-        metadata = json.loads(result.stdout)
-        return metadata
-
-    except FileNotFoundError:
-        # This occurs if 'ffprobe' is not found in the system's PATH
-        print("Error: ffprobe command not found. Ensure FFmpeg/ffprobe is installed and in your system PATH.")
-        return None
-    except subprocess.CalledProcessError as e:
-        # This occurs if ffprobe runs but returns an error code (e.g., file is corrupt)
-        print(f"Error running ffprobe for '{file_path}':")
-        print(f"  Command: {' '.join(e.cmd)}")
-        print(f"  Return Code: {e.returncode}")
-        print(f"  Stderr: {e.stderr.strip()}")
-        return None
-    except json.JSONDecodeError:
-        # This occurs if the output is not valid JSON
-        print(f"Error: Failed to decode JSON from ffprobe output for '{file_path}'.")
-        # print(f"Raw output: {result.stdout.strip()}") # Uncomment for debugging
-        return None
-    except Exception as e:
-        # Catch any other unexpected errors
-        print(f"An unexpected error occurred: {e}")
-        return None
-
-def already_converted(filepath):
-    """
-    Checks if a video file already meets the updated conversion criteria:
-    1. Resolution is at least TARGET_WIDTH x TARGET_HEIGHT.
-    2. Video codec is TARGET_CODECS (e.g., 'h264').
-    3. Video bitrate is below MAX_BITRATE_KBPS.
-
-    Args:
-        filepath (str): The path to the video file.
-
-    Returns:
-        bool: True if the file meets all criteria, False otherwise.
-    """
-    metadata = get_video_metadata(filepath)
-
-    if metadata is None:
-        print(f"Could not retrieve valid video metadata for {os.path.basename(filepath)}. Will convert.")
-        return False
-
-    # Extract values for comparison
-    video_stream = next((s for s in metadata.get('streams', [])
-                         if s.get('codec_type') == 'video'), None)
-    width = int(video_stream.get('width', 0))
-    height = int(video_stream.get('height', 0))
-    codec = video_stream.get('codec_name', 'unk_codec')
-    bitrate = int(int(metadata["format"].get('bit_rate', 0))/1000) # in KBPS
-
-    # 1. Check Resolution
-    # Assuming resolution check is 'at least' the target
-    res_ok = (width is not None and width >= TARGET_WIDTH) and \
-             (height is not None and height >= TARGET_HEIGHT)
-
-    # 2. Check Codec
-    codec_ok = (codec is not None and codec.lower() in TARGET_CODECS)
-
-    # 3. Check Bitrate (with tolerance)
-    bitrate_ok = bool(bitrate <= MAX_BITRATE_KBPS)
-
-    if res_ok and codec_ok and bitrate_ok:
-        print(f"... already meets conversion criteria:\n"
-              f"  Res: {width}x{height} ({res_ok}), Codec: {codec} ({codec_ok}),\n"
-              f"  Bitrate: {bitrate:.2f} kbps ({bitrate_ok})")
-        return True
-    else:
-        print(f"... needs conversion.\n"
-              f"  (Res: {width}x{height} - Target >= {TARGET_WIDTH}x{TARGET_HEIGHT},\n"
-              f"  Codec: {codec} - Target '{TARGET_CODECS}',\n"
-              f"  Bitrate: {bitrate} kbps - Target: <= {MAX_BITRATE_KBPS}")
-        return False
+import re
+import time
+from types import SimpleNamespace
+from datetime import timedelta
+# pylint: disable=too-many-locals,line-too-long,broad-exception-caught
 
 
-def monitor_transcode_progress(input_file, temp_file, duration_seconds):
-    """
-    Runs the FFmpeg transcode command and monitors its output for a non-scrolling display.
-    """
-    # Define the FFmpeg command
-    ffmpeg_cmd = [
-        'ffmpeg',
-        '-y',                           # Overwrite temp file if exists
-        '-i', input_file,
-        '-c:v', 'libx265',
-        '-crf', str(OUTPUT_CRF),
-        '-preset', 'medium',
-        '-c:a', 'copy',
-        '-c:s', 'copy',
-        '-map', '0',
-        temp_file
-    ]
+class Converter:
+    """ TBD """
+    # --- Conversion Criteria Constants (Customize these) ---
+    TARGET_WIDTH = 1920
+    TARGET_HEIGHT = 1080
+    TARGET_CODECS = ['h265', 'hevc']
+    MAX_BITRATE_KBPS = 2800 # about 20MB/min (or 800MB for 40m)
 
-    # Start FFmpeg subprocess
-    # We pipe stderr to capture progress updates
-    process = subprocess.Popen(
-        ffmpeg_cmd,
-        stdout=subprocess.DEVNULL,  # Discard normal stdout output
-        stderr=subprocess.PIPE,     # Capture progress messages from stderr
-        text=True,                  # Read output as text (string)
-        bufsize=1
+    # --- Configuration ---
+    OUTPUT_CRF = 24          # Target CRF for new x265 encodes
+    PROGRESS_UPDATE_INTERVAL = 3  # Seconds between print updates
+
+        # Regex to find FFmpeg progress lines (from stderr)
+        # Looks for 'frame=  XXXXX' and 'time=00:00:00.00' and 'speed=XX.XXx'
+    PROGRESS_RE = re.compile(
+        r"frame=\s*(\d+)\s+.*time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})\s+.*speed=\s*(\d+\.\d+)x"
     )
 
-    start_time = time.time()
-    last_update_time = start_time
-    total_duration_formatted = str(timedelta(seconds=int(duration_seconds)))
+    # A common list of video extensions ffmpeg can typically handle.
+    # NOTE: The check is *case-insensitive* by converting to lowercase.
+    VIDEO_EXTENSIONS = {
+        '.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv',
+        '.wmv', '.mpg', '.mpeg', '.3gp', '.m4v', '.ts',
+        '.ogg', '.ogv'
+        # You may need to add or remove extensions based on your specific requirements
+    }
+    # Prefixes to skip (case-sensitive as requested)
+    SKIP_PREFIXES = ('TEMP.', 'ORIG.')
 
-    # --- Progress Monitoring Loop ---
-    # Read stderr line-by-line until the process finishes
-    for line in process.stderr:
-        match = PROGRESS_RE.search(line)
+    def get_video_metadata(self, file_path):
+        """
+        Extracts video metadata using ffprobe and returns it as a Python dictionary.
+        Returns: dict or None: A dictionary containing the ffprobe output, or None if an
+                          error occurs (e.g., file not found, ffprobe fails).
+        """
+        # Check if the file exists
+        if not os.path.exists(file_path):
+            print(f"Error: File not found at '{file_path}'")
+            return None
 
-        # Check if the line contains progress data and if the update interval has passed
-        if match and (time.time() - last_update_time) >= PROGRESS_UPDATE_INTERVAL:
+        # ffprobe command to output format and stream information in JSON format
+        # -v error: Suppress all non-error messages (like the banner)
+        # -print_format json: Output in JSON format
+        # -show_format: Include container format information
+        # -show_streams: Include stream (video, audio, etc.) information
+        command = [
+            'ffprobe',
+            '-v', 'error',
+            '-print_format', 'json',
+            '-show_format',
+            '-show_streams',
+            file_path
+        ]
 
-            # 1. Extract values from the regex match
-            try:
-                groups = match.groups()
-
-                # The first two parts (H and M) are integers. The third part (S.ms) is the float.
-                h = int(groups[1])
-                m = int(groups[2])
-                s = int(groups[3])
-                ms = int(groups[4])
-                time_encoded_seconds = h * 3600 + m * 60 + s + ms / 100
-                speed = float(match.group(6))
-            except Exception:
-                print(f"\n{line=} {groups=}")
-                raise
-
-            elapsed_time_sec = int(time.time() - start_time)
-
-            # 2. Calculate remaining time
-            if duration_seconds > 0:
-                percent_complete = (time_encoded_seconds / duration_seconds) * 100
-
-                if percent_complete > 0 and speed > 0:
-                    # Time Remaining calculation (rough estimate)
-                    # Remaining Time = (Total Time - Encoded Time) / Speed
-                    remaining_seconds = (duration_seconds - time_encoded_seconds) / speed
-                    remaining_time_formatted = str(timedelta(seconds=int(remaining_seconds)))
-                else:
-                    remaining_time_formatted = "N/A"
-            else:
-                percent_complete = 0.0
-                remaining_time_formatted = "N/A"
-
-            # 3. Format the output line
-            # \r at the start makes the console cursor go back to the beginning of the line
-            progress_line = (
-                f"\r{timedelta(seconds=elapsed_time_sec)} | "
-                f"[{percent_complete:5.1f}%] | "
-                f"Time {str(timedelta(seconds=int(time_encoded_seconds))) or '??'}/{total_duration_formatted} | "
-                f"ETA {remaining_time_formatted} | "
-                f"Speed {speed:.1f}x"
+        try:
+            # Execute the command
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True  # Raise a CalledProcessError for non-zero exit codes
             )
 
-            # 4. Print and reset timer
-            print(progress_line, end='', flush=True)
-            last_update_time = time.time()
+            # Parse the JSON output
+            if self.opts.debug:
+                print(result.stdout)
+            metadata = json.loads(result.stdout)
+            # Extract values for comparison
+            video_stream = next((s for s in metadata.get('streams', [])
+                                 if s.get('codec_type') == 'video'), None)
+            ns = SimpleNamespace()
+            ns.width = int(video_stream.get('width', 0))
+            ns.height = int(video_stream.get('height', 0))
+            ns.codec = video_stream.get('codec_name', 'unk_codec')
+            ns.bitrate = int(int(metadata["format"].get('bit_rate', 0))/1000) # in KBPS
+            ns.duration = float(metadata["format"].get('duration', 0.0)) # in KBPS
+            return ns
 
-    # Wait for the process to truly finish and get the return code
-    process.wait()
+        except FileNotFoundError:
+            # This occurs if 'ffprobe' is not found in the system's PATH
+            print("Error: ffprobe command not found. Ensure FFmpeg/ffprobe is installed and in your system PATH.")
+            return None
+        except subprocess.CalledProcessError as e:
+            # This occurs if ffprobe runs but returns an error code (e.g., file is corrupt)
+            print(f"Error running ffprobe for '{file_path}':")
+            print(f"  Command: {' '.join(e.cmd)}")
+            print(f"  Return Code: {e.returncode}")
+            print(f"  Stderr: {e.stderr.strip()}")
+            return None
+        except json.JSONDecodeError:
+            # This occurs if the output is not valid JSON
+            print(f"Error: Failed to decode JSON from ffprobe output for '{file_path}'.")
+            # print(f"Raw output: {result.stdout.strip()}") # Uncomment for debugging
+            return None
+        except Exception as e:
+            # Catch any other unexpected errors
+            print(f"An unexpected error occurred: {e}")
+            return None
 
-    # Clear the progress line and print final status
-    print('\r' + ' ' * 120, end='', flush=True) # Overwrite last line with spaces
+    def already_converted(self):
+        """
+        Checks if a video file already meets the updated conversion criteria:
+        1. Resolution is at least TARGET_WIDTH x TARGET_HEIGHT.
+        2. Video codec is TARGET_CODECS (e.g., 'h264').
+        3. Video bitrate is below MAX_BITRATE_KBPS.
 
-    if process.returncode == 0:
-        print(f"\r{input_file}: Transcoding FINISHED (Elapsed: {timedelta(seconds=int(time.time() - start_time))})")
-        return True # Success
-    else:
-        # Print a final error message
-        print(f"\r{input_file}: Transcoding FAILED (Return Code: {process.returncode})")
-        # In a real script, you'd save or display the full error output from stderr here.
-        return False
+        Args:
+            filepath (str): The path to the video file.
 
-# A common list of video extensions ffmpeg can typically handle.
-# NOTE: The check is *case-insensitive* by converting to lowercase.
-VIDEO_EXTENSIONS = {
-    '.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv', 
-    '.wmv', '.mpg', '.mpeg', '.3gp', '.m4v', '.ts',
-    '.ogg', '.ogv'
-    # You may need to add or remove extensions based on your specific requirements
-}
-# Prefixes to skip (case-sensitive as requested)
-SKIP_PREFIXES = ('TEMP.', 'ORIG.')
+        Returns:
+            bool: True if the file meets all criteria, False otherwise.
+        """
+        # shorthand
+        width = self.probe.width
+        height = self.probe.height
+        codec = self.probe.codec
+        bitrate = self.probe.bitrate
 
-def is_valid_video_file(filename):
-    """
-    Checks if a file meets all the criteria:
-    1. Does not start with 'TEMP.' or 'ORIG.'.
-    2. Has a common video file extension (case-insensitive).
-    """
-    
-    # 1. Check for prefixes to skip
-    if filename.startswith(SKIP_PREFIXES):
-        print(f"Skipping '{filename}': Starts with a forbidden prefix.")
-        return False
+        # 1. Check Resolution
+        # Assuming resolution check is 'at least' the target
+        res_ok = (width is not None and width >= self.TARGET_WIDTH) and \
+                 (height is not None and height >= self.TARGET_HEIGHT)
 
-    # Get the file extension and convert to lowercase for case-insensitive check
-    # os.path.splitext returns a tuple: (root, ext)
-    _, ext = os.path.splitext(filename)
-    
-    # 2. Check if the extension is a recognized video format
-    if ext.lower() not in VIDEO_EXTENSIONS:
-        print(f"Skipping '{filename}': Not a recognized video file extension ('{ext.lower()}').")
-        return False
+        # 2. Check Codec
+        codec_ok = (codec is not None and codec.lower() in self.TARGET_CODECS)
+
+        # 3. Check Bitrate (with tolerance)
+        bitrate_ok = bool(bitrate <= self.MAX_BITRATE_KBPS)
+
+        if res_ok and codec_ok and bitrate_ok:
+            print(f"... already meets conversion criteria:\n"
+                  f"  Res: {width}x{height} ({res_ok}), Codec: {codec} ({codec_ok}),\n"
+                  f"  Bitrate: {bitrate:.2f} kbps ({bitrate_ok})")
+            return True
+        else:
+            print(f"... needs conversion.\n"
+                  f"  (Res: {width}x{height} - Target >= {self.TARGET_WIDTH}x{self.TARGET_HEIGHT},\n"
+                  f"  Codec: {codec} - Target '{self.TARGET_CODECS}',\n"
+                  f"  Bitrate: {bitrate} kbps - Target: <= {self.MAX_BITRATE_KBPS}")
+            return False
+
+
+    def monitor_transcode_progress(self, input_file, temp_file, duration_seconds):
+        """
+        Runs the FFmpeg transcode command and monitors its output for a non-scrolling display.
+        """
+        # Define the FFmpeg command
+        ffmpeg_cmd = [
+            'ffmpeg',
+            '-y',                           # Overwrite temp file if exists
+            '-i', input_file,
+            '-c:v', 'libx265',
+            '-crf', str(self.OUTPUT_CRF),
+            '-preset', 'medium',
+            '-c:a', 'copy',
+            '-c:s', 'copy',
+            '-map', '0',
+            temp_file
+        ]
+
+        start_time = time.time()
+        if self.opts.dry_run:
+            print(f"SKIP RUNNING {ffmpeg_cmd}\n")
+        else:
+            # Start FFmpeg subprocess
+            # We pipe stderr to capture progress updates
+            process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.DEVNULL,  # Discard normal stdout output
+                stderr=subprocess.PIPE,     # Capture progress messages from stderr
+                text=True,                  # Read output as text (string)
+                bufsize=1
+            )
+
+            last_update_time = start_time
+            total_duration_formatted = str(timedelta(seconds=int(duration_seconds)))
+
+            # --- Progress Monitoring Loop ---
+            # Read stderr line-by-line until the process finishes
+            for line in process.stderr:
+                match = self.PROGRESS_RE.search(line)
+
+                # Check if the line contains progress data and if the update interval has passed
+                if match and (time.time() - last_update_time) >= self.PROGRESS_UPDATE_INTERVAL:
+
+                    # 1. Extract values from the regex match
+                    try:
+                        groups = match.groups()
+
+                        # The first two parts (H and M) are integers. The third part (S.ms) is the float.
+                        h = int(groups[1])
+                        m = int(groups[2])
+                        s = int(groups[3])
+                        ms = int(groups[4])
+                        time_encoded_seconds = h * 3600 + m * 60 + s + ms / 100
+                        speed = float(match.group(6))
+                    except Exception:
+                        print(f"\n{line=} {groups=}")
+                        raise
+
+                    elapsed_time_sec = int(time.time() - start_time)
+
+                    # 2. Calculate remaining time
+                    if duration_seconds > 0:
+                        percent_complete = (time_encoded_seconds / duration_seconds) * 100
+
+                        if percent_complete > 0 and speed > 0:
+                            # Time Remaining calculation (rough estimate)
+                            # Remaining Time = (Total Time - Encoded Time) / Speed
+                            remaining_seconds = (duration_seconds - time_encoded_seconds) / speed
+                            remaining_time_formatted = str(timedelta(seconds=int(remaining_seconds)))
+                        else:
+                            remaining_time_formatted = "N/A"
+                    else:
+                        percent_complete = 0.0
+                        remaining_time_formatted = "N/A"
+
+                    # 3. Format the output line
+                    # \r at the start makes the console cursor go back to the beginning of the line
+                    progress_line = (
+                        f"\r{timedelta(seconds=elapsed_time_sec)} | "
+                        f"[{percent_complete:5.1f}%] | "
+                        f"ETA {remaining_time_formatted} | "
+                        f"Speed {speed:.1f}x | "
+                        f"Time {str(timedelta(seconds=int(time_encoded_seconds))) or '??'}/{total_duration_formatted}"
+                    )
+
+                    # 4. Print and reset timer
+                    print(progress_line, end='', flush=True)
+                    last_update_time = time.time()
+
+            # Wait for the process to truly finish and get the return code
+            process.wait()
+
+            # Clear the progress line and print final status
+            print('\r' + ' ' * 120, end='', flush=True) # Overwrite last line with spaces
+
+        if self.opts.dry_run or process.returncode == 0:
+            print(f"\r{input_file}: Transcoding FINISHED (Elapsed: {timedelta(seconds=int(time.time() - start_time))})")
+            return True # Success
+        else:
+            # Print a final error message
+            print(f"\r{input_file}: Transcoding FAILED (Return Code: {process.returncode})")
+            # In a real script, you'd save or display the full error output from stderr here.
+            return False
+
+
+    def is_valid_video_file(self, filename):
+        """
+        Checks if a file meets all the criteria:
+        1. Does not start with 'TEMP.' or 'ORIG.'.
+        2. Has a common video file extension (case-insensitive).
+        """
+
+        # 1. Check for prefixes to skip
+        if filename.startswith(self.SKIP_PREFIXES):
+            print(f"Skipping '{filename}': Starts with a forbidden prefix.")
+            return False
+
+        # Get the file extension and convert to lowercase for case-insensitive check
+        # os.path.splitext returns a tuple: (root, ext)
+        _, ext = os.path.splitext(filename)
+
+        # 2. Check if the extension is a recognized video format
+        if ext.lower() not in self.VIDEO_EXTENSIONS:
+            print(f"Skipping '{filename}': Not a recognized video file extension ('{ext.lower()}').")
+            return False
+
+        # The file meets all criteria
+        return True
+
+    def standard_name(self, filename: str) -> str:
+        """
+        Replaces common H.264/AVC/Xvid/DivX codec strings in a filename
+        with 'x265' or 'X265', preserving the original case where possible.
+
+        Args:
+            filename: The original filename string.
+
+        Returns:
+            The filename string with standardized codec strings.
+        """
+
+        # 1. Define the codec strings to be replaced, grouped by standard.
+        # Note: We are ignoring 'mp4 mobile', 'full-bluray', etc., as those
+        # are descriptive tags, not the codec identifiers themselves.
+
+        # Regular expressions for the codecs to be replaced.
+        # The groups will capture the exact string for case-checking later.
+        codec_patterns = [
+            # H.264/AVC family
+            r'(x\.?264)',
+            r'(h\.?264)',
+            r'(avc)',
+            # Xvid/DivX family (MPEG-4 Part 2)
+            r'(xvid)',
+            r'(divx)',
+        ]
+
+        new_filename = filename
+
+        # 2. Iterate through each pattern and perform a case-sensitive replacement.
+        for pattern in codec_patterns:
+            # Compile the regex to perform case-insensitive search (re.IGNORECASE)
+            # while still capturing the exact matched string.
+            # We also need to search for word boundaries (\b) to avoid replacing
+            # parts of other words (e.g., 'avc' in 'save_camera').
+            regex = re.compile(r'\b' + pattern + r'\b', re.IGNORECASE)
+            
+            while True:
+                match = re.search(regex, new_filename)
+                if not match:
+                    break
+                sub = 'X265' if match.string.isupper() else 'x265'
+                new_filename = new_filename[:match.start()] + sub + new_filename[match.end():]
+
+        # nail down extension
+        different = bool(new_filename != filename)
+        base, _ = os.path.splitext(new_filename)
+        new_filename = base + '.mkv'
         
-    # The file meets all criteria
-    return True
+        if self.opts.debug:
+            print(f'standard_name: {different=} {new_filename=})')
+
+        return different, new_filename
+
+    def bulk_rename(self, old_file_name: str, new_file_name: str):
+        """
+        Renames files and directories in the current working directory (CWD).
+
+        It finds all items whose non-extension part matches the non-extension part
+        of `old_file_name`, and renames them using the non-extension part of
+        `new_file_name`, preserving the original file extensions.
+
+        Args:
+            old_file_name: A sample filename (e.g., 'oldie.mp4') used to define
+                           the base name to look for ('oldie').
+            new_file_name: A sample filename (e.g., 'newbie.mkv') used to define
+                           the base name to rename to ('newbie').
+        """
+        dry_run = self.opts.dry_run
+
+        old_base_name, _ = os.path.splitext(old_file_name)
+        new_base_name, _ = os.path.splitext(new_file_name)
+
+        # Define the special suffix to look for (case-insensitive search)
+        special_ext = ".REFERENCE.srt"
+        # 2. Use os.walk for recursive traversal starting from the current directory ('.')
+        for root, dirs, files in os.walk('.', topdown=False):
+
+            # Combine files and directories for unified processing.
+            items_to_check = files + dirs
+
+            for item_name in items_to_check:
+                # Skip if the item is a special directory reference
+                if item_name in ('.', '..'):
+                    continue
+
+                full_old_path = os.path.join(root, item_name)
+                current_base, extension = os.path.splitext(item_name)
+
+                new_item_name = None
+
+                # --- Rule 1: Special Case - Full Name Match (item_name == old_base_name) ---
+                if item_name == old_base_name:
+                    new_item_name = new_base_name
+
+                # --- Rule 2: Special Case - Reference SRT Suffix Match ---
+                # Requires the item to end with ".reference.srt" AND the base part to match old_base_name
+                elif (item_name.lower().endswith(special_ext.lower())
+                      and item_name[:-len(special_ext)] == old_base_name):
+                    new_item_name = new_base_name + special_ext
+
+                # --- Rule 3: General Case - Base Name Match ---
+                # Applies if the non-extension part matches the intended old base name,
+                # and was not caught by the specific rules above.
+                elif current_base == old_base_name:
+                    # General Case: New name is new_base_name + original extension
+                    new_item_name = new_base_name + extension
+
+                # 4. If no matching rule was triggered, skip this one
+                if not new_item_name:
+                    continue
+
+                # 5. Perform the rename operation
+                full_new_path = os.path.join(root, new_item_name)
+                try:
+                    if dry_run:
+                        print(f"  WOULD rename as: '{full_new_path}'")
+                    else:
+                        os.rename(full_old_path, full_new_path)
+                except OSError as e:
+                    # Handle potential errors (e.g., permission errors, file in use)
+                    print(f"  ERROR renaming '{full_old_path}' to '{full_new_path}': {e}")
+                except Exception as e:
+                    # Catch other unexpected errors
+                    print(f"  An unexpected error occurred with '{full_old_path}': {e}")
 
 
-if __name__ == '__main__':
-    # sys.argv is the list of command-line arguments. sys.argv[0] is the script name.
-    files_to_process = sys.argv[1:]
-
-    if not files_to_process:
-        print("Usage: python your_script.py <file1> <file2> ...")
-        sys.exit(1)
-
-    print(f"Checking {len(files_to_process)} files...")
-    
-    # --- The main loop change is here ---
-    for input_file in files_to_process:
-        if not is_valid_video_file(input_file):
-            continue  # Skip to the next file in the loop
- 
+    def process_one_file(self, input_file):
+        """ Handle just one """
+        dry_run = self.opts.dry_run
+        if not self.is_valid_video_file(input_file):
+            return  # Skip to the next file in the loop
         print("\n" + "=" * 80)
         print(f"{input_file}")
 
+        self.probe = self.get_video_metadata(input_file)
+        if not self.probe:
+            print("SKIP: did not get probe metadata")
+            return
+
         # 1. Quality Check
-        if already_converted(input_file):
-            continue
+        if self.already_converted():
+            return
 
         # --- File names for the safe replacement process ---
-        temp_file = f"TEMP.{input_file}"
+        do_rename, standard_name = self.standard_name(input_file)
+        ## print(f'standard_name2: {do_rename=} {standard_name=})')
+        temp_file = f"TEMP.{standard_name}"
         orig_backup_file = f"ORIG.{input_file}"
 
         # 2. Get total video duration for ETA calculation
-        duration = get_video_duration(input_file)
+        duration = self.probe.duration
         if duration == 0.0:
             print(f"WARNING: Could not determine video duration. Progress monitor will only show elapsed time.")
 
         # 3. Transcode with monitored progress
-        success = monitor_transcode_progress(input_file, temp_file, duration)
+        success = self.monitor_transcode_progress(input_file, temp_file, duration)
 
         # 4. Atomic Swap (Safe Replacement)
         if success:
+            would = 'WOULD ' if dry_run else ''
             try:
                 # Rename original to backup
-                os.rename(input_file, orig_backup_file)
-                print(f"Original moved to {orig_backup_file}.")
+                if not dry_run:
+                    os.rename(input_file, orig_backup_file)
+                print(f"{would}Move Original to {orig_backup_file}.")
 
                 # Rename temporary file to the original filename
-                os.rename(temp_file, input_file)
-                print(f"SUCCESS: New H.265 file is now {input_file}.")
+                if not dry_run:
+                    os.rename(temp_file, standard_name)
+                print(f"SUCCESS: {would}Replace {standard_name} w converted video")
+
+                if do_rename:
+                    self.bulk_rename(input_file, standard_name)
 
             except OSError as e:
                 print(f"CRITICAL ERROR during file swap for {input_file}: {e}")
@@ -359,5 +469,63 @@ if __name__ == '__main__':
                 os.remove(temp_file)
                 print(f"FFmpeg failed. Deleted incomplete {temp_file}.")
 
-if __name__ == "__main__":
+    def main_loop(self):
+        """ TBD """
+        # sys.argv is the list of command-line arguments. sys.argv[0] is the script name.
+        video_files = []
+
+        for video_file in self.opts.files:
+            if not self.is_valid_video_file(video_file):
+                continue  # Skip to the next file in the loop
+            video_files.append(video_file)
+
+        if not video_files:
+            print("Usage: toh265 {options} {video_file}...")
+            sys.exit(1)
+
+        # --- The main loop change is here ---
+        original_cwd = os.getcwd()
+        for input_file_path_str in video_files:
+            file_dir, file_basename = os.path.split(input_file_path_str)
+            if not file_dir:
+                file_dir = os.path.abspath(os.path.dirname(input_file_path_str))
+
+            # Use a try...finally block to ensure you always change back.
+            try:
+                os.chdir(file_dir)
+                self.process_one_file(file_basename)
+
+            except Exception as e:
+                print(f"An error occurred while processing {file_basename}: {e}")
+            finally:
+                os.chdir(original_cwd)
+
+
+    def __init__(self, opts):
+        self.opts = opts
+        self.probe = None
+
+def main(args=None):
+    """
+    Convert video files to desired form
+    """
+    parser = argparse.ArgumentParser(
+        description="A script that accepts dry-run, force, and debug flags.")
+    parser.add_argument('-n', '--dry-run', action='store_true',
+                help='Perform a trial run with no changes made.')
+    parser.add_argument('-f', '--force', action='store_true',
+                help='Force the operation to proceed.')
+    parser.add_argument('-D', '--debug', action='store_true',
+                help='Enable debug output.')
+    parser.add_argument('files', nargs='*',
+        help='Non-option arguments (e.g., file paths or names).')
+    opts = parser.parse_args(args)
+
+    Converter(opts).main_loop()
+
+
+if __name__ == '__main__':
+    # When the script is run directly, call main
+    # Pass sys.argv[1:] to main, but it's cleaner to let argparse
+    # handle reading from sys.argv directly, as done above.
     main()
