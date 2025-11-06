@@ -91,7 +91,7 @@ class Converter:
             ns.codec = video_stream.get('codec_name', 'unk_codec')
             ns.bitrate = int(int(metadata["format"].get('bit_rate', 0))/1000) # in KBPS
             ns.duration = float(metadata["format"].get('duration', 0.0)) # in KBPS
-            ns.size = self.get_file_size_readable(file_path)
+            ns.gb = self.get_file_size_gb(file_path)
 
             return ns
 
@@ -134,7 +134,7 @@ class Converter:
         height = probe.height
         codec = probe.codec
         bitrate = probe.bitrate
-        size = probe.size
+        gb = probe.gb
 
         # 1. Check Resolution
         # Assuming resolution check is 'at least' the target
@@ -145,35 +145,39 @@ class Converter:
 
         # 3. Check Bitrate (with tolerance)
         bitrate_ok = bool(bitrate <= self.MAX_BITRATE_KBPS)
+        all_ok = bool(res_ok and bitrate_ok)
 
-        summary = f'  {width}x{height} {codec} {bitrate:.0f} kbps {size}'
-        ns = SimpleNamespace(doit='', summary=summary, filepath=video_file)
+        summary = f'  {width}x{height} {codec} {bitrate:.0f} kbps {gb}G'
+        ns = SimpleNamespace(doit='', width=width, height=height, res_ok=res_ok,
+                             codec=codec, bitrate=bitrate, bitrate_ok=bitrate_ok,
+                             gb=gb, all_ok=all_ok, filepath=video_file)
         self.videos.append(ns)
 
         if res_ok and bitrate_ok:
             if self.opts.window_mode:
-                ns.doit = 'ok'
+                ns.doit = '[ ]'
             else:
-                print(f'     ok: {summary}')
+                print(f'      -: {summary}')
             return True
         else:
             why = '' if res_ok else f'>{self.TARGET_HEIGHT}p '
             why += '' if bitrate_ok else f'>{self.MAX_BITRATE_KBPS} kbps'
+            if why:
+                why = f' [{why}]'
             if self.opts.window_mode:
-                ns.doit = 'CONVERT'
-                ns.summary += f' [{why}]'
+                ns.doit = '[X]'
             else:
-                print(f'CONVERT: {ns.summary}')
+                print(f'CONVERT: {summary}{why}')
             return False
 
     def monitor_transcode_progress(self, input_file, temp_file, duration_seconds):
         """
         Runs the FFmpeg transcode command and monitors its output for a non-scrolling display.
         """
-        def trim0(str):
-            if str.startswith('0:'):
-                return str[2:]
-            return str
+        def trim0(string):
+            if string.startswith('0:'):
+                return string[2:]
+            return string
 
         # Define the FFmpeg command
         ffmpeg_cmd = [
@@ -306,7 +310,7 @@ class Converter:
             return f"{size:.2f} {size_names[i]}"
 
     @staticmethod
-    def get_file_size_readable(filepath: str) -> str:
+    def get_file_size_gb(filepath: str) -> str:
         """
         Gets the size of a given file path and returns it in a human-readable format.
         Returns:
@@ -317,7 +321,8 @@ class Converter:
             size_bytes = os.path.getsize(filepath)
 
             # Convert bytes to human-readable format
-            return Converter.human_readable_size(size_bytes)
+            return round(size_bytes / (1024*1024*1024), 2)
+            # return Converter.human_readable_size(size_bytes)
 
         except FileNotFoundError:
             return f"Error: File not found at '{filepath}'"
@@ -384,7 +389,7 @@ class Converter:
             start, end = match.span(1)
 
             if matched_group.lower().endswith(('k', 'hd')):
-                # For '4K', 'UHD', etc. you can't rely on 'height_str' being correct, 
+                # For '4K', 'UHD', etc. you can't rely on 'height_str' being correct,
                 # so you must manually format the replacement based on the original's case.
                 is_upper = matched_group.isupper() # Check if '4K' was '4K' or '4k'
                 # The canonical replacement should be f'{height}p'
@@ -490,7 +495,7 @@ class Converter:
 
         # --- File names for the safe replacement process ---
         do_rename, standard_name = self.standard_name(input_file, ns.probe.height)
-        
+
         if self.opts.rename_only:
             if do_rename:
                 would = 'WOULD ' if dry_run else ''
@@ -551,12 +556,13 @@ class Converter:
                 print(f"FFmpeg failed. Deleted incomplete {temp_file}.")
 
     def create_video_file_list(self):
+        """ TBD """
         video_files_out = []
-        enqueued_paths = set() 
-        
+        enqueued_paths = set()
+
         # 1. Gather all unique, absolute paths from arguments and stdin
         paths_from_args = []
-        
+
         for file_arg in self.opts.files:
             if file_arg == "-":
                 # Handle STDIN
@@ -571,12 +577,12 @@ class Converter:
         # 2. Separate into directories and individual files, and sort for processing order
         directories = []
         immediate_files = []
-        
+
         for path in paths_from_args:
             # Ignore empty lines from stdin
             if not path:
                 continue
-                
+
             if os.path.isdir(path):
                 directories.append(path)
             else:
@@ -584,40 +590,40 @@ class Converter:
 
         # Sort the list of directories to be processed (case-insensitively)
         directories.sort(key=str.lower)
-        
+
         # Sort the list of individual files (case-insensitively)
         immediate_files.sort(key=str.lower)
-        
+
         # List to hold all file paths in the final desired, grouped, and sorted order
         paths_to_probe = []
 
         # 3. Process Directories: Find and group files recursively
         for dir_path in directories:
             # This list will hold all valid video files found in the current directory group
-            group_files = [] 
-            
+            group_files = []
+
             # Recursively walk the directory structure
             for root, dirs, files in os.walk(dir_path):
-                
+
                 # Sort the directory names before os.walk processes them (case-insensitive)
                 # This ensures predictable traversal order of subdirectories
-                dirs.sort(key=str.lower) 
-                
+                dirs.sort(key=str.lower)
+
                 # Sort the files within the current directory (case-insensitive)
                 files.sort(key=str.lower)
-                
+
                 for file_name in files:
                     full_path = os.path.join(root, file_name)
-                    
+
                     # Check for validity and duplicates
                     if self.is_valid_video_file(full_path):
                         if full_path not in enqueued_paths:
                             group_files.append(full_path)
                             enqueued_paths.add(full_path)
-                            
+
             # Append all grouped and sorted file paths for the current directory
             paths_to_probe.extend(group_files)
-                
+
         # 4. Process Individual Files: Append sorted immediate files
         paths_to_probe.extend(immediate_files)
 
@@ -625,7 +631,7 @@ class Converter:
         total_files = len(paths_to_probe)
         probe_count = 0
         update_interval = 10  # Update the line every 10 probes
-        
+
         if total_files > 0:
             # Print the initial line to start the progress bar
             sys.stderr.write(f"probing: 0% 0 of {total_files}\r")
@@ -633,9 +639,9 @@ class Converter:
 
         for video_file_path in paths_to_probe:
             probe_count += 1
-            
+
             probe = self.get_video_metadata(video_file_path)
-            
+
             if probe:
                 ns = SimpleNamespace(video_file=video_file_path, probe=probe)
                 video_files_out.append(ns)
@@ -643,38 +649,37 @@ class Converter:
             # Update the progress indicator every N probes or on the last file
             if probe_count % update_interval == 0 or probe_count == total_files:
                 percent = int((probe_count / total_files) * 100)
-                
+
                 # \r (carriage return) moves the cursor to the start of the line for overwrite
                 sys.stderr.write(f"probing: {percent}% {probe_count} of {total_files}\r")
                 sys.stderr.flush()
-                
+
         # Print a final newline character to clean the console after completion
         if total_files > 0:
             sys.stderr.write("\n")
             sys.stderr.flush()
-            
+
         return video_files_out
 
     def do_window_mode(self):
         """ TBD """
         def make_lines():
             lines = []
-            wid1 = len('CONVERT')
-            wid2 = 0
-            for ns in self.videos:
-                wid2 = max(wid2, len(ns.summary))
 
             for ns in self.videos:
                 basename = os.path.basename(ns.filepath)
                 dirname = os.path.dirname(ns.filepath)
-                line = f'{ns.doit:>{wid1}}  {ns.summary:<{wid2}}  {basename} ON {dirname}'
+                res = f'{ns.width}x{ns.height}'
+                ht_over = ' ' if ns.res_ok else '^' # '■'
+                br_over = ' ' if ns.bitrate_ok else '^' # '■'
+                line = f'{ns.doit:>3} {res:>9}{ht_over} {ns.bitrate:5}{br_over} {ns.gb:>5}   {basename} ON {dirname}'
                 lines.append(line)
                 # print(line)
             return lines
 
         spin = OptionSpinner()
-        spin.add_key('set_all', 's - set all to "CONVERT"', vals=[False, True])
-        spin.add_key('reset_all', 'r - reset all to "ok"', vals=[False, True])
+        spin.add_key('set_all', 's - set all to "[X]"', vals=[False, True])
+        spin.add_key('reset_all', 'r - reset all to "[ ]"', vals=[False, True])
         spin.add_key('init_all', 'i,SP - set all initial state', vals=[False, True])
         spin.add_key('toggle', 't - toggle current line state', vals=[False, True])
         spin.add_key('quit', 'q - exit the program', vals=[False, True])
@@ -687,6 +692,7 @@ class Converter:
 
         while True:
             win.add_header('[s]etAll [r]setAll [i]nit SPACE:toggle [G]o [q]uit')
+            win.add_header(f'CVT {"RES":>9}  {"KPBS":>5}  {"GB":>5}   VIDEO')
             lines = make_lines()
             for line in lines:
                 win.add_body(line)
@@ -694,24 +700,30 @@ class Converter:
             key = win.prompt(seconds=0.5) # Wait for half a second or a keypress
             if key in spin.keys:
                 spin.do_key(key, win)
+
             if vals.set_all:
                 for ns in self.videos:
-                    ns.doit = 'CONVERT'
+                    ns.doit = '[X]'
                 vals.set_all = False
+
             if vals.reset_all:
                 for ns in self.videos:
-                    ns.doit = 'ok'
-                self.reset_all = False
+                    ns.doit = '[ ]'
+                vals.reset_all = False
+
             if vals.init_all:
                 for ns in self.videos:
-                    ns.doit = 'CONVERT' if '[' in ns.summary else 'ok'
-                self.init_all = False
-            if vals.toggle:
+                    ns.doit = '[X]' if '[' in ns.over else '[ ]'
+                vals.init_all = False
+
+            if vals.toggle or key == ord(' '):
                 idx = win.pick_pos
                 if 0 <= idx < len(self.videos):
                     ns = self.videos[idx]
-                    ns.doit = 'CONVERT' if ns.doit == 'ok' else 'ok'
+                    ns.doit = '[X]' if ns.doit == '[ ]' else '[ ]'
                     vals.toggle = False
+                    win.pick_pos += 1
+
             if vals.quit:
                 sys.exit(0)
 
