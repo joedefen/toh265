@@ -14,6 +14,102 @@ from console_window import ConsoleWindow, OptionSpinner
 # pylint: disable=too-many-locals,line-too-long,broad-exception-caught
 # pylint: disable=no-else-return
 
+### 
+### import subprocess
+### import re
+### 
+### # --- Configuration for Aggressive Compression (Low Bitrate) ---
+### 
+### # CRF 28 is the 'default' for libx265. We go higher for lower quality/smaller file.
+### # Higher value = lower quality = smaller file.
+### CRF_VALUE_AGGRESSIVE = 30 
+### # QSV's equivalent is -global_quality. 25 is a common 'good' starting point.
+### # We go higher for lower quality/smaller file, aiming for ~1200kbps.
+### QSV_QUALITY_AGGRESSIVE = 32
+### 
+### # -----------------------------------------------------------
+### 
+### def detect_qsv_support():
+###     """Checks if the system's FFmpeg build supports hevc_qsv (Intel QSV HEVC encoding)."""
+###     try:
+###         # Command to list available encoders (We specifically look for 'hevc_qsv')
+###         command = ['ffmpeg', '-hide_banner', '-encoders']
+###         
+###         # Execute and check for success
+###         result = subprocess.run(
+###             command,
+###             capture_output=True,
+###             text=True,
+###             check=True, # Raises CalledProcessError for non-zero exit status
+###             timeout=5
+###         )
+### 
+###         # Search the output for the QSV HEVC encoder name
+###         if re.search(r'\bhevc_qsv\b', result.stdout):
+###             # This confirms the FFmpeg binary has QSV support compiled in.
+###             return True
+###         else:
+###             return False
+###             
+###     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+###         # Handles errors like 'ffmpeg' not found, command failure, or timeout.
+###         print(f"Warning: Could not execute FFmpeg to detect encoders. Assuming no QSV. Error: {e}")
+###         return False
+### 
+### # --- How to use it in your main application logic ---
+### 
+### # Initialize all your conversion flags
+### VIDEO_CODEC = ''
+### HWACCEL_FLAG = []
+### PIPLINE_ARG = []
+### QUALITY_ARG = []
+### PRESET_ARG = ['-preset', 'medium'] # Use a medium preset for a good balance
+### 
+### if detect_qsv_support():
+###     print(f"✅ Intel QSV (hevc_qsv) support detected. Using hardware acceleration.")
+###     
+###     # 1. Hardware Encoder
+###     VIDEO_CODEC = 'hevc_qsv'
+###     VIDEO_CODEC = 'hevc_vaapi'
+###     
+###     # 2. Hardware Acceleration Flag (may vary by system setup)
+###     # HWACCEL_FLAG = '-hwaccel qsv'.split()
+###     HWACCEL_FLAG = ['-init_hw_device', 'vaapi=va:/dev/dri/renderD128',
+###                         '-filter_hw_device', 'va'] 
+###     HWACCEL_FLAG = [ '-hwaccel', 'vaapi', # Enable VAAPI decoding
+###                     '-hwaccel_device', 'va:/dev/dri/renderD128', ]
+###     PIPELINE_ARG = [ '-vf', 'deinterlace_vaapi,hwmap=derive_device=va',]
+### 
+### 
+###     
+### 
+###     # 1. Video Filter: Map and format the data for QSV, removing the problematic upload step
+###     #    (The 'hwmap' step might be confusing the internal scaler, let's simplify to a pure format filter)
+###     #    We are changing the filter entirely to focus on format conversion within the hardware context.
+###     
+###     # 2. Output Pixel Format (CRITICAL)
+###     
+###     # 3. Quality Control (ICQ is QSV's CRF equivalent)
+###     # Target value {QSV_QUALITY_AGGRESSIVE} for aggressive (low bitrate) compression.
+###     # QUALITY_ARG = ['-global_quality', str(QSV_QUALITY_AGGRESSI# 5. THE FIX: Use the native VAAPI HEVC encoder
+###     QUALITY_ARG = ['-qp', '22',] # Quality parameter (Good balance for HEVC)VE)]
+###     
+###     # Note: QSV presets are often simple numbers (1-7) for speed/quality trade-offs.
+###     # The 'medium' preset may not be an exact QSV equivalent, but it's a good default.
+###     
+### else:
+###     print(f"❌ No Intel QSV support detected. Falling back to libx265 software encoding.")
+###     
+###     # 1. Software Encoder
+###     VIDEO_CODEC = 'libx265'
+###     
+###     # 2. No HW acceleration needed here
+###     HWACCEL_FLAG = [] 
+###     
+###     # 3. Quality Control (CRF)
+###     # Target value {CRF_VALUE_AGGRESSIVE} for aggressive (low bitrate) compression.
+###     QUALITY_ARG = ['-crf', str(CRF_VALUE_AGGRESSIVE)]
+
 class Converter:
     """ TBD """
     # --- Conversion Criteria Constants (Customize these) ---
@@ -23,7 +119,7 @@ class Converter:
     MAX_BITRATE_KBPS = 2100 # about 15MB/min (or 600MB for 40m)
 
     # --- Configuration ---
-    OUTPUT_CRF = 24          # Target CRF for new x265 encodes
+    OUTPUT_CRF = 22          # Target CRF for new x265 encodes
     PROGRESS_UPDATE_INTERVAL = 3  # Seconds between print updates
 
         # Regex to find FFmpeg progress lines (from stderr)
@@ -116,7 +212,7 @@ class Converter:
             print(f"An unexpected error occurred: {e}")
             return None
 
-    def already_converted(self, probe, video_file):
+    def already_converted(self, basic_ns, video_file):
         """
         Checks if a video file already meets the updated conversion criteria:
         1. Resolution is at least TARGET_WIDTH x TARGET_HEIGHT.
@@ -130,6 +226,7 @@ class Converter:
             bool: True if the file meets all criteria, False otherwise.
         """
         # shorthand
+        probe = basic_ns.probe
         width = probe.width
         height = probe.height
         codec = probe.codec
@@ -150,7 +247,11 @@ class Converter:
         summary = f'  {width}x{height} {codec} {bitrate:.0f} kbps {gb}G'
         ns = SimpleNamespace(doit='', width=width, height=height, res_ok=res_ok,
                              codec=codec, bitrate=bitrate, bitrate_ok=bitrate_ok,
-                             gb=gb, all_ok=all_ok, filepath=video_file)
+                             gb=gb, all_ok=all_ok, filepath=video_file,
+                             filedir=os.path.dirname(video_file),
+                             filebase=os.path.basename(video_file),
+                             standard_name=basic_ns.standard_name,
+                             do_rename=basic_ns.do_rename, probe=basic_ns.probe)
         self.videos.append(ns)
 
         if res_ok and bitrate_ok:
@@ -187,18 +288,20 @@ class Converter:
             '-c:v', 'libx265',
             '-crf', str(self.OUTPUT_CRF),
             '-preset', 'medium',
+            # '-preset', 'fast',
             '-c:a', 'copy',
             '-c:s', 'copy',
             '-map', '0',
             temp_file
         ]
-
+        # The libx265 software encoding command
         start_time = time.time()
         if self.opts.dry_run:
             print(f"SKIP RUNNING {ffmpeg_cmd}\n")
         else:
             # Start FFmpeg subprocess
             # We pipe stderr to capture progress updates
+            print(f'+ {ffmpeg_cmd}')
             process = subprocess.Popen(
                 ffmpeg_cmd,
                 stdout=subprocess.DEVNULL,  # Discard normal stdout output
@@ -214,6 +317,8 @@ class Converter:
             # Read stderr line-by-line until the process finishes
             for line in process.stderr:
                 match = self.PROGRESS_RE.search(line)
+                if not match:
+                    print(line)
 
                 # Check if the line contains progress data and if the update interval has passed
                 if match and (time.time() - last_update_time) >= self.PROGRESS_UPDATE_INTERVAL:
@@ -494,7 +599,10 @@ class Converter:
             print(f"{input_file}")
 
         # --- File names for the safe replacement process ---
-        do_rename, standard_name = self.standard_name(input_file, ns.probe.height)
+        do_rename, standard_name = self.standard_name(os.path.basename(input_file), ns.probe.height)
+
+        ns.do_rename = do_rename
+        ns.standard_name = standard_name
 
         if self.opts.rename_only:
             if do_rename:
@@ -502,17 +610,26 @@ class Converter:
                 self.bulk_rename(input_file, standard_name)
             return
 
-        # 1. Quality Check
-        if self.already_converted(ns.probe, input_file):
+        # 1. Quality Checkns
+        if self.already_converted(ns, input_file):
             return
         if self.opts.info_only:
             return
         if self.opts.window_mode:
             return
+        self.convert_one_file(ns)
+
+    def convert_one_file(self, ns):
+        """ TBD """
+        dry_run = self.opts.dry_run
+        os.chdir(ns.filedir)
 
         ## print(f'standard_name2: {do_rename=} {standard_name=})')
-        temp_file = f"TEMP.{standard_name}"
-        orig_backup_file = f"ORIG.{input_file}"
+        temp_file = f"TEMP.{ns.standard_name}"
+        orig_backup_file = f"ORIG.{ns.filebase}"
+
+        if os.path.exists(temp_file):
+            os.unlink(temp_file)
 
         # 2. Get total video duration for ETA calculation
         duration = ns.probe.duration
@@ -520,7 +637,7 @@ class Converter:
             print("WARNING: Cannot determine video duration. Progress monitor will only show elapsed time.")
 
         # 3. Transcode with monitored progress
-        success = self.monitor_transcode_progress(input_file, temp_file, duration)
+        success = self.monitor_transcode_progress(ns.filebase, temp_file, duration)
 
         # 4. Atomic Swap (Safe Replacement)
         if success:
@@ -529,25 +646,25 @@ class Converter:
                 # Rename original to backup
                 if not dry_run:
                     if self.opts.keep_backup:
-                        os.rename(input_file, orig_backup_file)
+                        os.rename(ns.filebase, orig_backup_file)
                     else:
-                        send2trash.send2trash(input_file)
+                        send2trash.send2trash(ns.filebase)
                 else:
                     if self.opts.keep_backup:
                         print(f"{would}Move Original to {orig_backup_file}")
                     else:
-                        print(f"{would}Trash {input_file}")
+                        print(f"{would}Trash {ns.filebase}")
 
                 # Rename temporary file to the original filename
                 if not dry_run:
-                    os.rename(temp_file, standard_name)
-                print(f"OK: {would}Replace {standard_name}")
+                    os.rename(temp_file, ns.standard_name)
+                print(f"OK: {would}Replace {ns.standard_name}")
 
-                if do_rename:
-                    self.bulk_rename(input_file, standard_name)
+                if ns.do_rename:
+                    self.bulk_rename(ns.filebase, ns.standard_name)
 
             except OSError as e:
-                print(f"ERROR during swap of {input_file}: {e}")
+                print(f"ERROR during swap of {ns.filepath}: {e}")
                 print(f"Original: {orig_backup_file}, New: {temp_file}. Manual cleanup required.")
         else:
             # Transcoding failed, delete the temporary file
@@ -683,7 +800,7 @@ class Converter:
         spin.add_key('init_all', 'i,SP - set all initial state', vals=[False, True])
         spin.add_key('toggle', 't - toggle current line state', vals=[False, True])
         spin.add_key('quit', 'q - exit the program', vals=[False, True])
-        others={ord(' '), }
+        others={ord(' '), ord('g')}
         vals = spin.default_obj
 
         win = ConsoleWindow(keys=spin.keys^others)
@@ -724,10 +841,19 @@ class Converter:
                     vals.toggle = False
                     win.pick_pos += 1
 
+            if key == ord('g'):
+                win.stop_curses()
+                break
+
             if vals.quit:
                 sys.exit(0)
 
             win.clear()
+        
+        for ns in self.videos:
+            if 'X' in ns.doit:
+                print(f'Would DoIt:  {ns.filepath} {ns.standard_name}')
+                self.convert_one_file(ns)
 
     def main_loop(self):
         """ TBD """
@@ -739,7 +865,6 @@ class Converter:
             sys.exit(1)
 
         # --- The main loop change is here ---
-        original_cwd = os.getcwd()
         for ns in video_files:
             input_file_path_str = ns.video_file
             file_dir, file_basename = os.path.split(input_file_path_str)
@@ -754,7 +879,7 @@ class Converter:
             except Exception as e:
                 print(f"An error occurred while processing {file_basename}: {e}")
             finally:
-                os.chdir(original_cwd)
+                os.chdir(self.original_cwd)
         if self.opts.window_mode:
             self.do_window_mode()
 
@@ -762,6 +887,7 @@ class Converter:
     def __init__(self, opts):
         self.opts = opts
         self.videos = []
+        self.original_cwd = os.getcwd()
 
 def main(args=None):
     """
@@ -786,9 +912,6 @@ def main(args=None):
     parser.add_argument('files', nargs='*',
         help='Non-option arguments (e.g., file paths or names).')
     opts = parser.parse_args(args)
-
-    if opts.window_mode:
-        opts.dry_run = True
 
     Converter(opts).main_loop()
 
