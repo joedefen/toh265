@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pylint: disable=too-many-statements
 """ TBD """
 import sys
 import os
@@ -16,29 +17,31 @@ from datetime import timedelta
 import send2trash
 from console_window import ConsoleWindow, OptionSpinner
 # pylint: disable=too-many-locals,line-too-long,broad-exception-caught
-# pylint: disable=no-else-return
+# pylint: disable=no-else-return,too-many-branches
+# pylint: disable=too-many-return-statements,too-many-instance-attributes
+# pylint: disable=consider-using-with
 
-### 
+###
 ### import subprocess
 ### import re
-### 
+###
 ### # --- Configuration for Aggressive Compression (Low Bitrate) ---
-### 
+###
 ### # CRF 28 is the 'default' for libx265. We go higher for lower quality/smaller file.
 ### # Higher value = lower quality = smaller file.
-### CRF_VALUE_AGGRESSIVE = 30 
+### CRF_VALUE_AGGRESSIVE = 30
 ### # QSV's equivalent is -global_quality. 25 is a common 'good' starting point.
 ### # We go higher for lower quality/smaller file, aiming for ~1200kbps.
 ### QSV_QUALITY_AGGRESSIVE = 32
-### 
+###
 ### # -----------------------------------------------------------
-### 
+###
 ### def detect_qsv_support():
 ###     """Checks if the system's FFmpeg build supports hevc_qsv (Intel QSV HEVC encoding)."""
 ###     try:
 ###         # Command to list available encoders (We specifically look for 'hevc_qsv')
 ###         command = ['ffmpeg', '-hide_banner', '-encoders']
-###         
+###
 ###         # Execute and check for success
 ###         result = subprocess.run(
 ###             command,
@@ -47,69 +50,69 @@ from console_window import ConsoleWindow, OptionSpinner
 ###             check=True, # Raises CalledProcessError for non-zero exit status
 ###             timeout=5
 ###         )
-### 
+###
 ###         # Search the output for the QSV HEVC encoder name
 ###         if re.search(r'\bhevc_qsv\b', result.stdout):
 ###             # This confirms the FFmpeg binary has QSV support compiled in.
 ###             return True
 ###         else:
 ###             return False
-###             
+###
 ###     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
 ###         # Handles errors like 'ffmpeg' not found, command failure, or timeout.
 ###         print(f"Warning: Could not execute FFmpeg to detect encoders. Assuming no QSV. Error: {e}")
 ###         return False
-### 
+###
 ### # --- How to use it in your main application logic ---
-### 
+###
 ### # Initialize all your conversion flags
 ### VIDEO_CODEC = ''
 ### HWACCEL_FLAG = []
 ### PIPLINE_ARG = []
 ### QUALITY_ARG = []
 ### PRESET_ARG = ['-preset', 'medium'] # Use a medium preset for a good balance
-### 
+###
 ### if detect_qsv_support():
 ###     print(f"✅ Intel QSV (hevc_qsv) support detected. Using hardware acceleration.")
-###     
+###
 ###     # 1. Hardware Encoder
 ###     VIDEO_CODEC = 'hevc_qsv'
 ###     VIDEO_CODEC = 'hevc_vaapi'
-###     
+###
 ###     # 2. Hardware Acceleration Flag (may vary by system setup)
 ###     # HWACCEL_FLAG = '-hwaccel qsv'.split()
 ###     HWACCEL_FLAG = ['-init_hw_device', 'vaapi=va:/dev/dri/renderD128',
-###                         '-filter_hw_device', 'va'] 
+###                         '-filter_hw_device', 'va']
 ###     HWACCEL_FLAG = [ '-hwaccel', 'vaapi', # Enable VAAPI decoding
 ###                     '-hwaccel_device', 'va:/dev/dri/renderD128', ]
 ###     PIPELINE_ARG = [ '-vf', 'deinterlace_vaapi,hwmap=derive_device=va',]
-### 
-### 
-###     
-### 
+###
+###
+###
+###
 ###     # 1. Video Filter: Map and format the data for QSV, removing the problematic upload step
 ###     #    (The 'hwmap' step might be confusing the internal scaler, let's simplify to a pure format filter)
 ###     #    We are changing the filter entirely to focus on format conversion within the hardware context.
-###     
+###
 ###     # 2. Output Pixel Format (CRITICAL)
-###     
+###
 ###     # 3. Quality Control (ICQ is QSV's CRF equivalent)
 ###     # Target value {QSV_QUALITY_AGGRESSIVE} for aggressive (low bitrate) compression.
 ###     # QUALITY_ARG = ['-global_quality', str(QSV_QUALITY_AGGRESSI# 5. THE FIX: Use the native VAAPI HEVC encoder
 ###     QUALITY_ARG = ['-qp', '22',] # Quality parameter (Good balance for HEVC)VE)]
-###     
+###
 ###     # Note: QSV presets are often simple numbers (1-7) for speed/quality trade-offs.
 ###     # The 'medium' preset may not be an exact QSV equivalent, but it's a good default.
-###     
+###
 ### else:
 ###     print(f"❌ No Intel QSV support detected. Falling back to libx265 software encoding.")
-###     
+###
 ###     # 1. Software Encoder
 ###     VIDEO_CODEC = 'libx265'
-###     
+###
 ###     # 2. No HW acceleration needed here
-###     HWACCEL_FLAG = [] 
-###     
+###     HWACCEL_FLAG = []
+###
 ###     # 3. Quality Control (CRF)
 ###     # Target value {CRF_VALUE_AGGRESSIVE} for aggressive (low bitrate) compression.
 ###     QUALITY_ARG = ['-crf', str(CRF_VALUE_AGGRESSIVE)]
@@ -131,7 +134,7 @@ class FfmpegMon:
     def start(self, command_line: list[str]) -> None:
         """
         Starts the FFmpeg subprocess.
-        
+
         Args:
             command_line: The full FFmpeg command as a list of strings.
         """
@@ -147,7 +150,7 @@ class FfmpegMon:
                 text=False,                  # Read output as text
                 bufsize=0
             )
-            
+
             # --- CRITICAL: Make stderr non-blocking ---
             # Get the file descriptor number for the stderr pipe
             fd = self.process.stderr.fileno()
@@ -155,12 +158,12 @@ class FfmpegMon:
             fl = fcntl.fcntl(fd, fcntl.F_GETFL)
             # Set the O_NONBLOCK flag
             fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-            
+
         except Exception as e:
             # Handle common errors like 'ffmpeg' not found
             print(f"Error starting FFmpeg process: {e}")
             self.return_code = 127
-            
+
     def poll(self) -> Union[Optional[int], str]:
         """
         Reads and processes data. Returns the next item from the internal queue
@@ -181,23 +184,23 @@ class FfmpegMon:
             chunk = self.process.stderr.read()
         except (IOError, OSError):
             chunk = b""
-        
+
         # 2. Process NEW DATA
         if chunk:
             # Append the new chunk to the existing buffer
             data = self.partial_line + chunk
-            
+
             # Split by the byte newline character
             lines = data.split(b'\n')
-            
+
             # The last element is the new partial line; the rest are complete lines
             self.partial_line = lines[-1]
-            
+
             # Put all complete lines onto the output queue
             for line_bytes in lines[:-1]:
                 line_str = line_bytes.decode('utf-8', errors='ignore').lstrip('\r')
                 self.output_queue.append(line_str)
-                
+
             # --- PROGRESS LINE LOGIC (if no newline was found) ---
             # If we received new data but didn't find any newlines, it's likely a progress update.
             # We treat the accumulated partial_line as the progress line.
@@ -215,12 +218,12 @@ class FfmpegMon:
                 final_output = self.partial_line.decode('utf-8', errors='ignore').lstrip('\r')
                 self.partial_line = b"" # Buffer consumed
                 self.output_queue.append(final_output) # Add the final line to the queue
-            
+
             # If the queue now has items, return the first one.
             if self.output_queue:
-                 self.return_code = process_status # Store code for *after* the queue is empty
-                 return self.output_queue.pop(0)
-            
+                self.return_code = process_status # Store code for *after* the queue is empty
+                return self.output_queue.pop(0)
+
             # If the queue is empty, we return the final code.
             self.return_code = process_status
             self.process = None
@@ -232,8 +235,8 @@ class FfmpegMon:
             return self.output_queue.pop(0)
 
         return None
-            
-    
+
+
     def _read_remaining(self):
         """
         Helper to read any final buffered output after termination.
@@ -244,14 +247,14 @@ class FfmpegMon:
             self.partial_line += remaining_data
         except (IOError, OSError):
             pass # Ignore if stream is already closed or empty
-            
+
         # Check if the final output contains a full line we missed
         if self.partial_line:
             # This logic is a bit simple, but assumes the final chunk is mostly an error message.
             # You may want to store this in a separate error buffer for later dump.
             # For now, we'll just discard it if it's not a complete line.
             pass
-            
+
     def stop(self):
         """
         Terminates the subprocess if it is still running.
@@ -267,20 +270,50 @@ class FfmpegMon:
         """Ensure the subprocess is terminated when the object is destroyed."""
         self.stop()
 
+class Job: # class FfmpegJob:
+    """ TBD """
+    def __init__(self, input_file, orig_backup_file, temp_file, duration_secs):
+        self.start_time=time.time()
+        self.progress='Started'
+        self.input_file = input_file
+        self.orig_backup_file=orig_backup_file
+        self.temp_file=temp_file
+        self.duration_secs=duration_secs
+        self.total_duration_formatted=str(timedelta(seconds=int(duration_secs)))
+        self.ffsubproc=FfmpegMon()
+        self.return_code = None
+
+    @staticmethod
+    def trim0(string):
+        """ TBD """
+        if string.startswith('0:'):
+            return string[2:]
+        return string
+
+    @staticmethod
+    def duration_spec(secs):
+        """ TBD """
+        secs = int(round(secs))
+        hours = math.floor(secs / 3600)
+        minutes = math.floor((secs % 3600) / 60)
+        secs = secs % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 # --- Example Usage in Your Curses Loop ---
 
 # # ... (Setup your FFmpeg command line) ...
 # ffmpeg_cmd = [
 #     'ffmpeg', '-i', 'input.mp4', '-c:v', 'libx265', '-crf', '30', 'output.mp4'
 # ]
-# 
+#
 # monitor = FfmpegMon()
 # monitor.start(ffmpeg_cmd)
-# 
+#
 # while True:
 #     # 1. Poll the process
 #     status = monitor.poll()
-# 
+#
 #     # 2. Handle the status
 #     if isinstance(status, int):
 #         # Process is done. Handle success/failure based on the return code.
@@ -288,15 +321,15 @@ class FfmpegMon:
 #         break
 #     elif isinstance(status, str):
 #         # New progress line received!
-#         # progress_line = status 
+#         # progress_line = status
 #         # Match your PROGRESS_RE and update your curses window here
-#         pass 
+#         pass
 #     elif status is None:
-#         # No new line. Use this time to handle user input (getch()), 
+#         # No new line. Use this time to handle user input (getch()),
 #         # update your UI's clock, or refresh the screen to prevent flickering.
 #         # time.sleep(0.01)
 #         pass
-# 
+#
 #     # CRITICAL: Sleep briefly to prevent a busy-loop from consuming CPU
 #     time.sleep(0.01)
 
@@ -336,7 +369,6 @@ class Converter:
         self.original_cwd = os.getcwd()
         self.ff_pre_i_opts = []
         self.ff_post_i_opts = []
-        self.ffsubproc = FfmpegMon()
 
     def get_video_metadata(self, file_path):
         """
@@ -471,29 +503,15 @@ class Converter:
                 print(f'CONVERT: {summary}{why}')
             return False
 
-    def monitor_transcode_progress(self, ns, temp_file):
-        """
-        Runs the FFmpeg transcode command and monitors its output for a non-scrolling display.
-        """
-        def trim0(string):
-            if string.startswith('0:'):
-                return string[2:]
-            return string
-        def duration_spec(secs):
-            secs = int(round(secs))
-            hours = math.floor(secs / 3600)
-            minutes = math.floor((secs % 3600) / 60)
-            secs = secs % 60
-            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    def start_transcode_job(self, ns, job):
+        """ TBD """
 
         pre_i_opts, post_i_opts = copy(self.ff_pre_i_opts), copy(self.ff_post_i_opts)
-        input_file, duration_seconds = ns.filebase, ns.probe.duration
-        if self.opts.sample:
-            duration_seconds = self.sample_seconds
+        job.input_file = ns.filebase
 
         if self.opts.sample:
-            start_secs = max(120, duration_seconds)*.20
-            pre_i_opts += [ '-ss', duration_spec(start_secs) ]
+            start_secs = max(120, job.duration_secs)*.20
+            pre_i_opts += [ '-ss', job.duration_spec(start_secs) ]
             post_i_opts += [ '-t', str(self.sample_seconds)]
 
         # Define the FFmpeg command
@@ -502,7 +520,7 @@ class Converter:
             '-y',                           # Overwrite temp file if exists
             # '-v', 'error',                  # suppress INFO/WARNINGS
             * pre_i_opts,
-            '-i', input_file,
+            '-i', job.input_file,
             * post_i_opts,
             '-c:v', 'libx265',
             '-crf', str(self.opts.quality),
@@ -511,19 +529,21 @@ class Converter:
             '-c:a', 'copy',
             '-c:s', 'copy',
             '-map', '0',
-            temp_file
+            job.temp_file
         ]
-        # The libx265 software encoding command
-        start_time = time.time()
-
         if self.opts.dry_run:
             print(f"SKIP RUNNING {ffmpeg_cmd}\n")
         else:
-            self.ffsubproc.start(ffmpeg_cmd)
+            job.ffsubproc.start(ffmpeg_cmd)
 
-            last_update_time = start_time
-            total_duration_formatted = trim0(str(timedelta(seconds=int(duration_seconds))))
-            return_code = 0
+    def monitor_transcode_progress(self, ns, job):
+        """
+        Runs the FFmpeg transcode command and monitors its output for a non-scrolling display.
+        """
+
+
+        if not self.opts.dry_run:
+            last_update_time = job.start_time
 
             # --- Progress Monitoring Loop ---
             # Read stderr line-by-line until the process finishes
@@ -533,7 +553,7 @@ class Converter:
                     time.sleep(0.1)
                     skip_sleep = False
 
-                got = self.ffsubproc.poll()
+                got = job.ffsubproc.poll()
                 if isinstance(got, str):
                     skip_sleep = True
                     line = got
@@ -561,17 +581,17 @@ class Converter:
                         print(f"\n{line=} {groups=}")
                         raise
 
-                    elapsed_time_sec = int(time.time() - start_time)
+                    elapsed_time_sec = int(time.time() - job.start_time)
 
                         # 2. Calculate remaining time
-                    if duration_seconds > 0:
-                        percent_complete = (time_encoded_seconds / duration_seconds) * 100
+                    if job.duration_secs > 0:
+                        percent_complete = (time_encoded_seconds / job.duration_secs) * 100
 
                         if percent_complete > 0 and speed > 0:
                             # Time Remaining calculation (rough estimate)
                             # Remaining Time = (Total Time - Encoded Time) / Speed
-                            remaining_seconds = (duration_seconds - time_encoded_seconds) / speed
-                            remaining_time_formatted = trim0(str(timedelta(seconds=int(remaining_seconds))))
+                            remaining_seconds = (job.duration_secs - time_encoded_seconds) / speed
+                            remaining_time_formatted = job.trim0(str(timedelta(seconds=int(remaining_seconds))))
                         else:
                             remaining_time_formatted = "N/A"
                     else:
@@ -580,13 +600,13 @@ class Converter:
 
                     # 3. Format the output line
                     # \r at the start makes the console cursor go back to the beginning of the line
-                    cur_time_formatted = trim0(str(timedelta(seconds=int(time_encoded_seconds))))
+                    cur_time_formatted = job.trim0(str(timedelta(seconds=int(time_encoded_seconds))))
                     progress_line = (
-                        f"\r{trim0(str(timedelta(seconds=elapsed_time_sec)))} | "
+                        f"\r{job.trim0(str(timedelta(seconds=elapsed_time_sec)))} | "
                         f"{percent_complete:.1f}% | "
                         f"ETA {remaining_time_formatted} | "
                         f"Speed {speed:.1f}x | "
-                        f"Time {cur_time_formatted}/{total_duration_formatted}"
+                        f"Time {cur_time_formatted}/{job.total_duration_formatted}"
                     )
 
                     # 4. Print and reset timer
@@ -600,11 +620,12 @@ class Converter:
             print('\r' + ' ' * 120, end='', flush=True) # Overwrite last line with spaces
 
         if self.opts.dry_run or return_code == 0:
-            print(f"\r{input_file}: Transcoding FINISHED (Elapsed: {timedelta(seconds=int(time.time() - start_time))})")
+            print(f"\r{job.input_file}: Transcoding FINISHED"
+                  f" (Elapsed: {timedelta(seconds=int(time.time() - job.start_time))})")
             return True # Success
         else:
             # Print a final error message
-            print(f"\r{input_file}: Transcoding FAILED (Return Code: {process.returncode})")
+            print(f"\r{job.input_file}: Transcoding FAILED (Return Code: {job.returncode})")
             # In a real script, you'd save or display the full error output from stderr here.
             return False
 
@@ -814,7 +835,6 @@ class Converter:
     def process_one_file(self, ns):
         """ Handle just one """
         input_file = ns.video_file
-        dry_run = self.opts.dry_run
         if not self.is_valid_video_file(input_file):
             return  # Skip to the next file in the loop
         if not self.opts.window_mode:
@@ -829,7 +849,6 @@ class Converter:
 
         if self.opts.rename_only:
             if do_rename:
-                would = 'WOULD ' if dry_run else ''
                 self.bulk_rename(input_file, standard_name)
             return
 
@@ -854,9 +873,15 @@ class Converter:
 
         if os.path.exists(temp_file):
             os.unlink(temp_file)
+        duration_secs = ns.probe.duration
+        if self.opts.sample:
+            duration_secs = self.sample_seconds
+
+        job = Job(ns.filebase, orig_backup_file, temp_file, duration_secs)
 
         # 3. Transcode with monitored progress
-        success = self.monitor_transcode_progress(ns, temp_file)
+        self.start_transcode_job(ns, job)
+        success = self.monitor_transcode_progress(ns, job)
 
         # 4. Atomic Swap (Safe Replacement)
         if success and not self.opts.sample:
@@ -1070,7 +1095,7 @@ class Converter:
                 sys.exit(0)
 
             win.clear()
-        
+
         for ns in self.videos:
             if 'X' in ns.doit:
                 print(f'>>> {ns.filebase}')
