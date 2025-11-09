@@ -503,9 +503,24 @@ class Converter:
                 print(f'CONVERT: {summary}{why}')
             return False
 
-    def start_transcode_job(self, ns, job):
+    def start_transcode_job(self, ns):
         """ TBD """
 
+        dry_run = self.opts.dry_run
+        os.chdir(ns.filedir)
+
+        ## print(f'standard_name2: {do_rename=} {standard_name=})')
+        prefix = 'SAMPLE' if self.opts.sample else 'TEST'
+        temp_file = f"{prefix}.{ns.standard_name}"
+        orig_backup_file = f"ORIG.{ns.filebase}"
+
+        if os.path.exists(temp_file):
+            os.unlink(temp_file)
+        duration_secs = ns.probe.duration
+        if self.opts.sample:
+            duration_secs = self.sample_seconds
+
+        job = Job(ns.filebase, orig_backup_file, temp_file, duration_secs)
         pre_i_opts, post_i_opts = copy(self.ff_pre_i_opts), copy(self.ff_post_i_opts)
         job.input_file = ns.filebase
 
@@ -535,13 +550,12 @@ class Converter:
             print(f"SKIP RUNNING {ffmpeg_cmd}\n")
         else:
             job.ffsubproc.start(ffmpeg_cmd)
+        return job
 
     def monitor_transcode_progress(self, ns, job):
         """
         Runs the FFmpeg transcode command and monitors its output for a non-scrolling display.
         """
-
-
         if not self.opts.dry_run:
             last_update_time = job.start_time
 
@@ -863,45 +877,33 @@ class Converter:
 
     def convert_one_file(self, ns):
         """ TBD """
-        dry_run = self.opts.dry_run
-        os.chdir(ns.filedir)
-
-        ## print(f'standard_name2: {do_rename=} {standard_name=})')
-        prefix = 'SAMPLE' if self.opts.sample else 'TEST'
-        temp_file = f"{prefix}.{ns.standard_name}"
-        orig_backup_file = f"ORIG.{ns.filebase}"
-
-        if os.path.exists(temp_file):
-            os.unlink(temp_file)
-        duration_secs = ns.probe.duration
-        if self.opts.sample:
-            duration_secs = self.sample_seconds
-
-        job = Job(ns.filebase, orig_backup_file, temp_file, duration_secs)
 
         # 3. Transcode with monitored progress
-        self.start_transcode_job(ns, job)
+        job = self.start_transcode_job(ns)
         success = self.monitor_transcode_progress(ns, job)
+        self.finish_transcode_job(success, ns, job)
 
+    def finish_transcode_job(self, success, ns, job):
         # 4. Atomic Swap (Safe Replacement)
+        dry_run = self.opts.dry_run
         if success and not self.opts.sample:
             would = 'WOULD ' if dry_run else ''
             try:
                 # Rename original to backup
                 if not dry_run:
                     if self.opts.keep_backup:
-                        os.rename(ns.filebase, orig_backup_file)
+                        os.rename(ns.filebase, job.orig_backup_file)
                     else:
                         send2trash.send2trash(ns.filebase)
                 else:
                     if self.opts.keep_backup:
-                        print(f"{would}Move Original to {orig_backup_file}")
+                        print(f"{would}Move Original to {job.orig_backup_file}")
                     else:
                         print(f"{would}Trash {ns.filebase}")
 
                 # Rename temporary file to the original filename
                 if not dry_run:
-                    os.rename(temp_file, ns.standard_name)
+                    os.rename(job.temp_file, ns.standard_name)
                 print(f"OK: {would}Replace {ns.standard_name}")
 
                 if ns.do_rename:
@@ -909,11 +911,11 @@ class Converter:
 
             except OSError as e:
                 print(f"ERROR during swap of {ns.filepath}: {e}")
-                print(f"Original: {orig_backup_file}, New: {temp_file}. Manual cleanup required.")
+                print(f"Original: {job.orig_backup_file}, New: {job.temp_file}. Manual cleanup required.")
         elif not success:
             # Transcoding failed, delete the temporary file
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
+            if os.path.exists(job.temp_file):
+                os.remove(job.temp_file)
                 print(f"FFmpeg failed. Deleted incomplete {temp_file}.")
 
     def create_video_file_list(self):
