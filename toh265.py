@@ -506,7 +506,6 @@ class Converter:
     def start_transcode_job(self, ns):
         """ TBD """
 
-        dry_run = self.opts.dry_run
         os.chdir(ns.filedir)
 
         ## print(f'standard_name2: {do_rename=} {standard_name=})')
@@ -557,75 +556,16 @@ class Converter:
         Runs the FFmpeg transcode command and monitors its output for a non-scrolling display.
         """
         if not self.opts.dry_run:
-            last_update_time = job.start_time
-
             # --- Progress Monitoring Loop ---
             # Read stderr line-by-line until the process finishes
-            skip_sleep = False
             while True:
-                if not skip_sleep:
-                    time.sleep(0.1)
-                    skip_sleep = False
+                time.sleep(0.1)
 
-                got = job.ffsubproc.poll()
-                if isinstance(got, str):
-                    skip_sleep = True
-                    line = got
-                    match = self.PROGRESS_RE.search(line)
-                    if not match:
-                        ns.texts.append(line)
-                        continue
-
-                    # Check if the line contains progress data and if the update interval has passed
-                    if time.time() - last_update_time <= self.PROGRESS_UPDATE_INTERVAL:
-                        continue
-
-                    # 1. Extract values from the regex match
-                    try:
-                        groups = match.groups()
-
-                        # The first two parts (H and M) are integers. The third part (S.ms) is the float.
-                        h = int(groups[1])
-                        m = int(groups[2])
-                        s = int(groups[3])
-                        ms = int(groups[4])
-                        time_encoded_seconds = h * 3600 + m * 60 + s + ms / 100
-                        speed = float(match.group(6))
-                    except Exception:
-                        print(f"\n{line=} {groups=}")
-                        raise
-
-                    elapsed_time_sec = int(time.time() - job.start_time)
-
-                        # 2. Calculate remaining time
-                    if job.duration_secs > 0:
-                        percent_complete = (time_encoded_seconds / job.duration_secs) * 100
-
-                        if percent_complete > 0 and speed > 0:
-                            # Time Remaining calculation (rough estimate)
-                            # Remaining Time = (Total Time - Encoded Time) / Speed
-                            remaining_seconds = (job.duration_secs - time_encoded_seconds) / speed
-                            remaining_time_formatted = job.trim0(str(timedelta(seconds=int(remaining_seconds))))
-                        else:
-                            remaining_time_formatted = "N/A"
-                    else:
-                        percent_complete = 0.0
-                        remaining_time_formatted = "N/A"
-
-                    # 3. Format the output line
-                    # \r at the start makes the console cursor go back to the beginning of the line
-                    cur_time_formatted = job.trim0(str(timedelta(seconds=int(time_encoded_seconds))))
-                    progress_line = (
-                        f"\r{job.trim0(str(timedelta(seconds=elapsed_time_sec)))} | "
-                        f"{percent_complete:.1f}% | "
-                        f"ETA {remaining_time_formatted} | "
-                        f"Speed {speed:.1f}x | "
-                        f"Time {cur_time_formatted}/{job.total_duration_formatted}"
-                    )
+                got = self.get_job_progress(ns, job)
 
                     # 4. Print and reset timer
-                    print(progress_line, end='', flush=True)
-                    last_update_time = time.time()
+                if isinstance(got, str):
+                    print(got, end='', flush=True)
                 elif isinstance(got, int):
                     return_code = got
                     break
@@ -642,6 +582,63 @@ class Converter:
             print(f"\r{job.input_file}: Transcoding FAILED (Return Code: {job.returncode})")
             # In a real script, you'd save or display the full error output from stderr here.
             return False
+
+    def get_job_progress(self, ns, job):
+        """ TBD """
+        while True:
+            got = job.ffsubproc.poll()
+            if isinstance(got, str):
+                line = got
+                match = self.PROGRESS_RE.search(line)
+                if not match:
+                    ns.texts.append(line)
+                    continue
+
+                # 1. Extract values from the regex match
+                try:
+                    groups = match.groups()
+
+                    # The first two parts (H and M) are integers. The third part (S.ms) is the float.
+                    h = int(groups[1])
+                    m = int(groups[2])
+                    s = int(groups[3])
+                    ms = int(groups[4])
+                    time_encoded_seconds = h * 3600 + m * 60 + s + ms / 100
+                    speed = float(match.group(6))
+                except Exception:
+                    print(f"\n{line=} {groups=}")
+                    raise
+
+                elapsed_time_sec = int(time.time() - job.start_time)
+
+                    # 2. Calculate remaining time
+                if job.duration_secs > 0:
+                    percent_complete = (time_encoded_seconds / job.duration_secs) * 100
+
+                    if percent_complete > 0 and speed > 0:
+                        # Time Remaining calculation (rough estimate)
+                        # Remaining Time = (Total Time - Encoded Time) / Speed
+                        remaining_seconds = (job.duration_secs - time_encoded_seconds) / speed
+                        remaining_time_formatted = job.trim0(str(timedelta(seconds=int(remaining_seconds))))
+                    else:
+                        remaining_time_formatted = "N/A"
+                else:
+                    percent_complete = 0.0
+                    remaining_time_formatted = "N/A"
+
+                # 3. Format the output line
+                # \r at the start makes the console cursor go back to the beginning of the line
+                cur_time_formatted = job.trim0(str(timedelta(seconds=int(time_encoded_seconds))))
+                progress_line = (
+                    f"\r{job.trim0(str(timedelta(seconds=elapsed_time_sec)))} | "
+                    f"{percent_complete:.1f}% | "
+                    f"ETA {remaining_time_formatted} | "
+                    f"Speed {speed:.1f}x | "
+                    f"Time {cur_time_formatted}/{job.total_duration_formatted}"
+                )
+                return progress_line
+            else:
+                return got
 
     @staticmethod
     def human_readable_size(size_bytes: int) -> str:
@@ -884,6 +881,7 @@ class Converter:
         self.finish_transcode_job(success, ns, job)
 
     def finish_transcode_job(self, success, ns, job):
+        """ TBD """
         # 4. Atomic Swap (Safe Replacement)
         dry_run = self.opts.dry_run
         if success and not self.opts.sample:
@@ -916,7 +914,7 @@ class Converter:
             # Transcoding failed, delete the temporary file
             if os.path.exists(job.temp_file):
                 os.remove(job.temp_file)
-                print(f"FFmpeg failed. Deleted incomplete {temp_file}.")
+                print(f"FFmpeg failed. Deleted incomplete {job.temp_file}.")
 
     def create_video_file_list(self):
         """ TBD """
