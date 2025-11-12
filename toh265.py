@@ -7,7 +7,7 @@ import math
 import argparse
 import subprocess
 import traceback
-import json
+import atexit
 import re
 import time
 import fcntl
@@ -18,10 +18,19 @@ from types import SimpleNamespace
 from datetime import timedelta
 import send2trash
 from console_window import ConsoleWindow, OptionSpinner
+from ProbeCache import ProbeCache
 # pylint: disable=too-many-locals,line-too-long,broad-exception-caught
 # pylint: disable=no-else-return,too-many-branches
 # pylint: disable=too-many-return-statements,too-many-instance-attributes
 # pylint: disable=consider-using-with
+
+def store_cache_on_exit():
+    """ TBD """
+    if Converter.singleton:
+        if Converter.singleton.win:
+            Converter.singleton.win.stop_curses()
+        if Converter.singleton.probe_cache:
+            Converter.singleton.probe_cache.store()
 
 ###
 ### import subprocess
@@ -378,79 +387,83 @@ class Converter:
         self.state = 'probe' # 'select', 'convert'
         self.job = None
         self.win = None
+        self.probe_cache = ProbeCache()
+        self.probe_cache.load()
+        self.probe_cache.store()
+        atexit.register(store_cache_on_exit)
 
-    def get_video_metadata(self, file_path):
-        """
-        Extracts video metadata using ffprobe and returns it as a Python dictionary.
-        Returns: dict or None: A dictionary containing the ffprobe output, or None if an
-                          error occurs (e.g., file not found, ffprobe fails).
-        """
-        # Check if the file exists
-        if not os.path.exists(file_path):
-            print(f"Error: File not found at '{file_path}'")
-            return None
+#   def get_video_metadata(self, file_path):
+#       """
+#       Extracts video metadata using ffprobe and returns it as a Python dictionary.
+#       Returns: dict or None: A dictionary containing the ffprobe output, or None if an
+#                         error occurs (e.g., file not found, ffprobe fails).
+#       """
+#       # Check if the file exists
+#       if not os.path.exists(file_path):
+#           print(f"Error: File not found at '{file_path}'")
+#           return None
 
-        # ffprobe command to output format and stream information in JSON format
-        # -v error: Suppress all non-error messages (like the banner)
-        # -print_format json: Output in JSON format
-        # -show_format: Include container format information
-        # -show_streams: Include stream (video, audio, etc.) information
-        command = [
-            'ffprobe',
-            '-v', 'error',
-            '-print_format', 'json',
-            '-show_format',
-            '-show_streams',
-            file_path
-        ]
+#       # ffprobe command to output format and stream information in JSON format
+#       # -v error: Suppress all non-error messages (like the banner)
+#       # -print_format json: Output in JSON format
+#       # -show_format: Include container format information
+#       # -show_streams: Include stream (video, audio, etc.) information
+#       command = [
+#           'ffprobe',
+#           '-v', 'error',
+#           '-print_format', 'json',
+#           '-show_format',
+#           '-show_streams',
+#           file_path
+#       ]
 
-        try:
-            # Execute the command
-            result = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True  # Raise a CalledProcessError for non-zero exit codes
-            )
+#       try:
+#           # Execute the command
+#           result = subprocess.run(
+#               command,
+#               stdout=subprocess.PIPE,
+#               stderr=subprocess.PIPE,
+#               text=True,
+#               check=True  # Raise a CalledProcessError for non-zero exit codes
+#           )
 
-            # Parse the JSON output
-            if self.opts.debug:
-                print(result.stdout)
-            metadata = json.loads(result.stdout)
-            # Extract values for comparison
-            video_stream = next((s for s in metadata.get('streams', [])
-                                 if s.get('codec_type') == 'video'), None)
-            meta = SimpleNamespace()
-            meta.width = int(video_stream.get('width', 0))
-            meta.height = int(video_stream.get('height', 0))
-            meta.codec = video_stream.get('codec_name', 'unk_codec')
-            meta.bitrate = int(int(metadata["format"].get('bit_rate', 0))/1000) # in KBPS
-            meta.duration = float(metadata["format"].get('duration', 0.0)) # in secs
-            meta.gb = self.get_file_size_gb(file_path)
+#           # Parse the JSON output
+#           if self.opts.debug:
+#               print(result.stdout)
+#           metadata = json.loads(result.stdout)
+#           # Extract values for comparison
+#           video_stream = next((s for s in metadata.get('streams', [])
+#                                if s.get('codec_type') == 'video'), None)
+#           meta = SimpleNamespace()
+#           meta.width = int(video_stream.get('width', 0))
+#           meta.height = int(video_stream.get('height', 0))
+#           meta.codec = video_stream.get('codec_name', 'unk_codec')
+#           meta.bitrate = int(int(metadata["format"].get('bit_rate', 0))/1000) # in KBPS
+#           meta.duration = float(metadata["format"].get('duration', 0.0)) # in secs
+#           meta.gb = self.get_file_size_gb(file_path)
 
-            return meta
+#           return meta
 
-        except FileNotFoundError:
-            # This occurs if 'ffprobe' is not found in the system's PATH
-            print("Error: ffprobe command not found. Ensure FFmpeg/ffprobe is installed and in your system PATH.")
-            return None
-        except subprocess.CalledProcessError as e:
-            # This occurs if ffprobe runs but returns an error code (e.g., file is corrupt)
-            print(f"Error running ffprobe for '{file_path}':")
-            print(f"  Command: {' '.join(e.cmd)}")
-            print(f"  Return Code: {e.returncode}")
-            print(f"  Stderr: {e.stderr.strip()}")
-            return None
-        except json.JSONDecodeError:
-            # This occurs if the output is not valid JSON
-            print(f"Error: Failed to decode JSON from ffprobe output for '{file_path}'.")
-            # print(f"Raw output: {result.stdout.strip()}") # Uncomment for debugging
-            return None
-        except Exception as e:
-            # Catch any other unexpected errors
-            print(f"An unexpected error occurred: {e}")
-            return None
+#       except FileNotFoundError:
+#           # This occurs if 'ffprobe' is not found in the system's PATH
+#           print("Error: ffprobe command not found. Ensure FFmpeg/ffprobe is installed and in your system PATH.")
+#           return None
+#       except subprocess.CalledProcessError as e:
+#           # This occurs if ffprobe runs but returns an error code (e.g., file is corrupt)
+#           print(f"Error running ffprobe for '{file_path}':")
+#           print(f"  Command: {' '.join(e.cmd)}")
+#           print(f"  Return Code: {e.returncode}")
+#           print(f"  Stderr: {e.stderr.strip()}")
+#           return None
+#       except json.JSONDecodeError:
+#           # This occurs if the output is not valid JSON
+#           print(f"Error: Failed to decode JSON from ffprobe output for '{file_path}'.")
+#           # print(f"Raw output: {result.stdout.strip()}") # Uncomment for debugging
+#           return None
+#       except Exception as e:
+#           # Catch any other unexpected errors
+#           print(f"An unexpected error occurred: {e}")
+#           return None
 
     def apply_probe(self, vid, probe):
         """ TBD """
@@ -647,7 +660,7 @@ class Converter:
                 )
                 return progress_line
             elif isinstance(got, int):
-                vid.return_code = got 
+                vid.return_code = got
                 return got
             else:
                 return got
@@ -681,25 +694,25 @@ class Converter:
         else:
             return f"{size:.2f} {size_names[i]}"
 
-    @staticmethod
-    def get_file_size_gb(filepath: str) -> str:
-        """
-        Gets the size of a given file path and returns it in a human-readable format.
-        Returns:
-            A string with the file size (e.g., "1.2 MB") or an error message.
-        """
-        try:
-            # Get the size in bytes
-            size_bytes = os.path.getsize(filepath)
+#   @staticmethod
+#   def get_file_size_gb(filepath: str) -> str:
+#       """
+#       Gets the size of a given file path and returns it in a human-readable format.
+#       Returns:
+#           A string with the file size (e.g., "1.2 MB") or an error message.
+#       """
+#       try:
+#           # Get the size in bytes
+#           size_bytes = os.path.getsize(filepath)
 
-            # Convert bytes to human-readable format
-            return round(size_bytes / (1024*1024*1024), 3)
-            # return Converter.human_readable_size(size_bytes)
+#           # Convert bytes to human-readable format
+#           return round(size_bytes / (1024*1024*1024), 3)
+#           # return Converter.human_readable_size(size_bytes)
 
-        except FileNotFoundError:
-            return f"Error: File not found at '{filepath}'"
-        except Exception as e:
-            return f"Error getting file size: {e}"
+#       except FileNotFoundError:
+#           return f"Error: File not found at '{filepath}'"
+#       except Exception as e:
+#           return f"Error getting file size: {e}"
 
 
     def is_valid_video_file(self, filename):
@@ -919,17 +932,19 @@ class Converter:
 
                 if vid.do_rename:
                     self.bulk_rename(vid.filebase, vid.standard_name)
-                
+
                 if not dry_run:
-                    probe = self.get_video_metadata(vid.standard_name)
+                    # probe = self.get_video_metadata(vid.standard_name)
+                    probe = self.probe_cache.get(vid.standard_name)
                     self.apply_probe(vid, probe)
 
             except OSError as e:
                 print(f"ERROR during swap of {vid.filepath}: {e}")
                 print(f"Original: {job.orig_backup_file}, New: {job.temp_file}. Manual cleanup required.")
         elif success and self.opts.sample:
-                probe = self.get_video_metadata(job.temp_file)
-                self.apply_probe(vid, probe)
+            # probe = self.get_video_metadata(job.temp_file)
+            probe = self.probe_cache.get(job.temp_file)
+            self.apply_probe(vid, probe)
         elif not success:
             # Transcoding failed, delete the temporary file
             if os.path.exists(job.temp_file):
@@ -1021,7 +1036,8 @@ class Converter:
         for video_file_path in paths_to_probe:
             probe_count += 1
 
-            probe = self.get_video_metadata(video_file_path)
+            # probe = self.get_video_metadata(video_file_path)
+            probe = self.probe_cache.get(video_file_path)
 
             if probe:
                 ns = SimpleNamespace(video_file=video_file_path, probe=probe)
@@ -1179,6 +1195,7 @@ class Converter:
         """ TBD """
         # sys.argv is the list of command-line arguments. sys.argv[0] is the script name.
         video_files = self.create_video_file_list()
+        video_files.sort(key=lambda vid: vid.probe.bloat, reverse=True)
 
         if not video_files:
             print("Usage: toh265 {options} {video_file}...")
