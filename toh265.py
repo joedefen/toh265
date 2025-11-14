@@ -11,6 +11,8 @@ TODO:
 - expose/spin samples as option -- make samples-dir and option
 - make cmf (or quality) a spinner / expose it
 - expose bloat thresh (change by 100? or prompt for it)
+- have allowed bloat option (all, x265, x26*) ... if disallowed,
+  effective bloat is max(threshold, score)
 """
 import sys
 import os
@@ -1198,6 +1200,8 @@ def main(args=None):
                     help='thread count for ffmpeg conversions')
         parser.add_argument('-w', '--window-mode', action='store_false',
                     help='disable window mode')
+        parser.add_argument('-a', '--allowed-codecs', choices=('x26*', 'x265', 'all'),
+                    default='x26*', help='allowed codecs')
         parser.add_argument('-q', '--quality', default=28,
                     help='output quality (CRF) [dflt=28]')
         parser.add_argument('-W', '--keep-window', action='store_false',
