@@ -8,6 +8,9 @@ TODO:
 - hide unselected in convert mode
 - ensure the 10% better is enforced and the RED is computed
 - have a "save-my-options" option to create defaults
+- expose/spin samples as option -- make samples-dir and option
+- make cmf (or quality) a spinner / expose it
+- expose bloat thresh (change by 100? or prompt for it)
 """
 import sys
 import os
@@ -1194,7 +1197,7 @@ def main(args=None):
         parser.add_argument('-t', '--thread_cnt', default=0, type=int,
                     help='thread count for ffmpeg conversions')
         parser.add_argument('-w', '--window-mode', action='store_false',
-                    help='just look for re-names')
+                    help='disable window mode')
         parser.add_argument('-q', '--quality', default=28,
                     help='output quality (CRF) [dflt=28]')
         parser.add_argument('-W', '--keep-window', action='store_false',
@@ -1218,8 +1221,6 @@ def main(args=None):
 
         print("exception:", str(exc))
         print(traceback.format_exc())
-
-
 
 
 if __name__ == '__main__':
