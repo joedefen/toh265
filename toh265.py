@@ -4,15 +4,13 @@
 TBD
 TODO:
 - allow /search in select mode
-- disallow /search is convert mode
+- disallow /search in convert mode
 - hide unselected in convert mode
 - ensure the 10% better is enforced and the RED is computed
 - have a "save-my-options" option to create defaults
 - expose/spin samples as option -- make samples-dir and option
 - make cmf (or quality) a spinner / expose it
 - expose bloat thresh (change by 100? or prompt for it)
-- have allowed bloat option (all, x265, x26*) ... if disallowed,
-  effective bloat is max(threshold, score)
 """
 import sys
 import os
@@ -325,7 +323,6 @@ class Job: # class FfmpegJob:
         secs = secs % 60
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
-
 class Converter:
     """ TBD """
     # --- Conversion Criteria Constants (Customize these) ---
@@ -390,9 +387,15 @@ class Converter:
         vid.duration = probe.duration
         vid.gb = probe.gb
 
+        vid.codec_ok = bool(self.opts.allowed_codecs == 'all')
+        if self.opts.allowed_codecs == 'x265':
+            vid.codec_ok = bool(vid.codec in ('hevc',))
+        if self.opts.allowed_codecs == 'x26*':
+            vid.codec_ok = bool(vid.codec in ('hevc','h264'))
+
         vid.res_ok = bool(vid.height is not None and vid.height <= self.TARGET_HEIGHT)
         vid.bloat_ok = bool(vid.bloat < self.opts.bloat_thresh)
-        vid.all_ok = bool(vid.res_ok and vid.bloat_ok)
+        vid.all_ok = bool(vid.res_ok and vid.bloat_ok and vid.codec_ok)
 
         vid.summary = (f'  {vid.width}x{vid.height}' +
                         f' {vid.codec} {vid.bloat}b {vid.gb}G')
@@ -412,8 +415,8 @@ class Converter:
         """
 
         vid = SimpleNamespace(doit='', width=None, height=None, res_ok=None,
-                 duration=None, codec=None, bitrate=None, bloat_ok=None,
-                 gb=None, all_ok=None, filepath=video_file,
+                 duration=None, codec=None, bitrate=None, bloat=None, bloat_ok=None,
+                 codec_ok=None, gb=None, all_ok=None, filepath=video_file,
                  filedir=os.path.dirname(video_file),
                  filebase=os.path.basename(video_file),
                  standard_name=basic_ns.standard_name,
@@ -431,6 +434,7 @@ class Converter:
         else:
             why = '' if vid.res_ok else f'>{self.TARGET_HEIGHT}p '
             why += '' if vid.bloat_ok else f'>{self.opts.bloat_thresh} kbps'
+            why += '' if vid.codec else f'>{vid.codec}'
             if why:
                 why = f' [{why}]'
             if self.opts.window_mode:
@@ -803,7 +807,7 @@ class Converter:
 
         if self.opts.rename_only:
             if do_rename:
-                self.bulk_rename(input_file, standard_name)
+                self.bulk_rename(input_file, standard_name, trashes=set())
             return
 
         # 1. Quality Checkns
@@ -992,6 +996,7 @@ class Converter:
                 or base.startswith('test.')
                 or base.endswith('.recode.mkv')):
             return True
+        return False
 
     def do_window_mode(self):
         """ TBD """
@@ -1006,9 +1011,10 @@ class Converter:
                 res = f'{vid.height}p'
                 ht_over = ' ' if vid.res_ok else '^' # '■'
                 br_over = ' ' if vid.bloat_ok else '^' # '■'
+                co_over = ' ' if vid.codec_ok else '^'
                 mins = int(round(vid.duration / 60))
                 line = f'{vid.doit:>3} --- {vid.bloat:5}{br_over} {res:>5}{ht_over}'
-                line += f' {mins:>5} {vid.gb:>6}   {basename} ON {dirname}'
+                line += f' {vid.codec:>5}{co_over} {mins:>4} {vid.gb:>6}   {basename} ON {dirname}'
                 lines.append(line)
                 nses.append(vid)
                 if self.job and self.job.vid == vid:
@@ -1050,7 +1056,7 @@ class Converter:
             else:
                 win.add_header('q[uit]')
 
-            win.add_header(f'CVT {"RED":>3} {"BLOAT":>5}  {"RES":>5}  {"MINS":>4}  {"GB":>6}   VIDEO')
+            win.add_header(f'CVT {"RED":>3} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO')
             lines, _, progress_idx = make_lines()
             if self.state == 'convert':
                 win.pick_pos = progress_idx
@@ -1066,7 +1072,7 @@ class Converter:
             if self.state == 'select':
                 if vals.set_all:
                     for vid in self.vids:
-                        if not vid.filebase.startswith('SAMPLE.'):
+                        if not self.dont_doit(vid):
                             vid.doit = '[X]'
                     vals.set_all = False
 
@@ -1077,7 +1083,10 @@ class Converter:
 
                 if vals.init_all:
                     for vid in self.vids:
-                        vid.doit = '[X]' if '[' in vid.over else '[ ]'
+                        if self.dont_doit(vid) or vid.all_ok:
+                            vid.doit = '[ ]'
+                        else:
+                            vid.doit = '[X]'
                     vals.init_all = False
 
                 if vals.toggle or key == ord(' '):
@@ -1213,8 +1222,7 @@ def main(args=None):
         opts = parser.parse_args(args)
         if opts.sample:
             opts.dry_run = False
-        if opts.bloat_thresh < 500:
-            opts.bloat_thresh = 500
+        opts.bloat_thresh = max(500, opts.bloat_thresh)
 
         Converter(opts).main_loop()
     except Exception as exc:
