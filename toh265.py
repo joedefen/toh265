@@ -30,7 +30,7 @@ import send2trash
 from console_window import ConsoleWindow, OptionSpinner
 from ProbeCache import ProbeCache
 from VideoParser import VideoParser
-from ConfigManager import ConfigManager
+from IniManager import IniManager
 
 # pylint: disable=too-many-locals,line-too-long,broad-exception-caught
 # pylint: disable=no-else-return,too-many-branches
@@ -304,7 +304,8 @@ class Job: # class FfmpegJob:
         self.orig_backup_file=orig_backup_file
         self.temp_file=temp_file
         self.duration_secs=duration_secs
-        self.total_duration_formatted=str(timedelta(seconds=int(duration_secs)))
+        self.total_duration_formatted=self.trim0(
+                        str(timedelta(seconds=int(duration_secs))))
         self.ffsubproc=FfmpegMon()
         self.return_code = None
 
@@ -331,10 +332,6 @@ class Converter:
     TARGET_HEIGHT = 1080
     TARGET_CODECS = ['h265', 'hevc']
     MAX_BITRATE_KBPS = 2100 # about 15MB/min (or 600MB for 40m)
-
-    # --- Configuration ---
-    OUTPUT_CRF = 22          # Target CRF for new x265 encodes
-    PROGRESS_UPDATE_INTERVAL = 3  # Seconds between print updates
 
         # Regex to find FFmpeg progress lines (from stderr)
         # Looks for 'frame=  XXXXX' and 'time=00:00:00.00' and 'speed=XX.XXx'
@@ -373,6 +370,7 @@ class Converter:
         self.ff_thread_opts = []
         self.state = 'probe' # 'select', 'convert'
         self.job = None
+        self.prev_time_encoded_secs = -1
         self.probe_cache = ProbeCache()
         self.probe_cache.load()
         self.probe_cache.store()
@@ -522,7 +520,7 @@ class Converter:
             return True # Success
         else:
             # Print a final error message
-            print(f"\r{job.input_file}: Transcoding FAILED (Return Code: {job.returncode})")
+            print(f"\r{job.input_file}: Transcoding FAILED (Return Code: {job.return_code})")
             # In a real script, you'd save or display the full error output from stderr here.
             return False
 
@@ -548,6 +546,9 @@ class Converter:
                     s = int(groups[3])
                     ms = int(groups[4])
                     time_encoded_seconds = h * 3600 + m * 60 + s + ms / 100
+                    time_encoded_seconds = round(int(time_encoded_seconds))
+                    if self.prev_time_encoded_secs == time_encoded_seconds:
+                        continue  # don't return too often
                     speed = float(match.group(6))
                 except Exception:
                     print(f"\n{line=} {groups=}")
@@ -572,7 +573,7 @@ class Converter:
 
                 # 3. Format the output line
                 # \r at the start makes the console cursor go back to the beginning of the line
-                cur_time_formatted = job.trim0(str(timedelta(seconds=int(time_encoded_seconds))))
+                cur_time_formatted = job.trim0(str(timedelta(seconds=time_encoded_seconds)))
                 progress_line = (
                     f"{job.trim0(str(timedelta(seconds=elapsed_time_sec)))} | "
                     f"{percent_complete:.1f}% | "
@@ -834,12 +835,20 @@ class Converter:
         vid = job.vid
         probe = None
         if success:
-            probe = self.probe_cache.get(job.temp_file)
+            if not dry_run:
+                probe = self.probe_cache.get(job.temp_file)
             if not probe:
-                success = False
-                vid.doit = 'ERR'
-            net = (vid.gb - probe.gb) / vid.gb
-            net = int(round(-net*100))
+                if dry_run:
+                    success = True
+                    vid.doit = 'ok'
+                    net = -20
+                else:
+                    success = False
+                    vid.doit = 'ERR'
+                    net = 0
+            else:
+                net = (vid.gb - probe.gb) / vid.gb
+                net = int(round(-net*100))
             if net > -10:
                 success = False
             vid.net = f'{net}%'
@@ -1012,10 +1021,16 @@ class Converter:
         """ TBD """
         def make_lines(doit_skips=None):
             nonlocal self
-            lines, nses, progress_idx = [], [], 0
+            lines, nses = [], []
             self.visible_vids = []
+            stats = SimpleNamespace(total=0, picked=0, done=0, progress_idx=0)
+            stats.total = len(self.vids)
 
-            for idx, vid in enumerate(self.vids):
+            for vid in self.vids:
+                if vid.doit != '[ ]':
+                    stats.picked += 1
+                if vid.doit != '[X]':
+                    stats.done += 1
                 if self.state == 'convert' and vid.doit == '[ ]':
                     continue
                 if doit_skips and vid.doit in doit_skips:
@@ -1039,11 +1054,14 @@ class Converter:
                 self.visible_vids.append(vid)
                 if self.job and self.job.vid == vid:
                     lines.append(f'-----> {self.job.progress}')
-                    progress_idx = 1+idx
+                    stats.progress_idx = len(self.visible_vids)
                     self.visible_vids.append(None)
+                    if self.win.pick_mode:
+                        stats.progress_idx -= 1
+                        self.win.set_pick_mode(False)
 
                 # print(line)
-            return lines, progress_idx
+            return lines, stats
 
         def toggle_doit(vid):
             if self.dont_doit(vid):
@@ -1072,20 +1090,24 @@ class Converter:
         win.set_pick_mode(True, 1)
 
         while True:
+            lines, stats = make_lines()
             if self.state == 'select':
                 head = '[s]etAll [r]setAll [i]nit SP:toggle [g]o [q]uit'
                 if vals.dry_run:
                     head += ' [d]ry-run'
+                if self.opts.sample:
+                    head += ' SAMPLE'
                 if vals.search:
                     head += f' /{vals.search}'
                 win.add_header(head)
-            else:
-                win.add_header('q[uit]')
+            win.add_header(f'     Picked={stats.picked}/{stats.total}')
+            if self.state != 'select':
+                win.add_header(f' Done={stats.done} q[uit]', resume=True)
 
             win.add_header(f'CVT {"NET":>4} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO')
-            lines, progress_idx = make_lines()
             if self.state == 'convert':
-                win.pick_pos = progress_idx
+                win.pick_pos = stats.progress_idx
+                win.scroll_pos = stats.progress_idx - win.scroll_view_size
             for line in lines:
                 win.add_body(line)
             win.render()
@@ -1156,6 +1178,7 @@ class Converter:
                 if not self.job:
                     for vid in self.vids:
                         if vid.doit == '[X]':
+                            self.prev_time_encoded_secs = -1
                             self.job = self.start_transcode_job(vid)
                             vid.doit = 'IP '
                             break
@@ -1216,7 +1239,7 @@ def main(args=None):
     Convert video files to desired form
     """
     try:
-        cfg = ConfigManager(app_name='toh265',
+        cfg = IniManager(app_name='toh265',
                                keep_backup=False,
                                bloat_thresh=1600,
                                thread_cnt=0,

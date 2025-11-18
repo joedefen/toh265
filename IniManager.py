@@ -3,7 +3,7 @@ import os
 import types
 from pathlib import Path
 
-class ConfigManager:
+class IniManager:
     """
     A class to manage application configuration stored in a config.ini file
     within the user's home directory.
@@ -24,7 +24,7 @@ class ConfigManager:
 
     def __init__(self, app_name, **kwargs):
         """
-        Initializes the ConfigManager and performs initial read/write operations.
+        Initializes the IniManager and performs initial read/write operations.
 
         :param app_name: The name of the application, used for the directory (~/app_name).
         :param kwargs: Keyword arguments representing field names and their default values.
@@ -159,7 +159,7 @@ if __name__ == '__main__':
     print(f"Expected path: {Path.home() / APP_NAME / 'config.ini'}")
 
     # Create the manager, it should create the file with these defaults
-    manager1 = ConfigManager(
+    manager1 = IniManager(
         app_name=APP_NAME,
         log_level="DEBUG",
         max_threads=5,
@@ -181,7 +181,7 @@ if __name__ == '__main__':
 
     print("--- 2. Second run (config file exists and fields match) ---")
     # This run should read the updated values (INFO, 10) from the file
-    manager2 = ConfigManager(
+    manager2 = IniManager(
         app_name=APP_NAME,
         log_level="TRACE", # Default will be ignored
         max_threads=1,     # Default will be ignored
@@ -194,7 +194,7 @@ if __name__ == '__main__':
 
     print("--- 3. Third run (adding a new field - requires a write) ---")
     # Adding a new field 'timeout_seconds' with a default of 30
-    manager3 = ConfigManager(
+    manager3 = IniManager(
         app_name=APP_NAME,
         log_level="INFO",
         max_threads=10,
