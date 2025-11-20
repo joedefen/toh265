@@ -159,6 +159,7 @@ class FfmpegMon:
         self.partial_line: bytes = b""
         self.output_queue: list[str] = []  # <--- NEW: Queue for complete lines
         self.return_code: Optional[int] = None
+        self.temp_file = None
 
     def start(self, command_line: list[str]) -> None:
         """
@@ -291,6 +292,8 @@ class FfmpegMon:
         if self.process and self.process.poll() is None:
             self.process.terminate()
             self.process.wait(timeout=5) # Wait for it to die gracefully
+        os.unlink(self.temp_file) if self.temp_file and os.path.exists(self.temp_file) else None
+        self.temp_file = None
         self.process = None
         self.partial_line = ""
         self.return_code = return_code
@@ -418,12 +421,13 @@ class Converter:
             bool: True if the file meets all criteria, False otherwise.
         """
 
-        vid = SimpleNamespace(doit='', net=' ---', width=None, height=None,
+        vid = SimpleNamespace(
+                    filepath=video_file,
+                    filebase=os.path.basename(video_file),
+                    doit='', net=' ---', width=None, height=None,
                     command=None, res_ok=None,
                     duration=None, codec=None, bitrate=None, bloat=None, bloat_ok=None,
-                    codec_ok=None, gb=None, all_ok=None, filepath=video_file,
-                    filedir=os.path.dirname(video_file),
-                    filebase=os.path.basename(video_file),
+                    codec_ok=None, gb=None, all_ok=None,
                     standard_name=basic_ns.standard_name,
                     do_rename=basic_ns.do_rename, probe=None,
                 return_code=None, texts=[], ops=[])
@@ -450,7 +454,7 @@ class Converter:
     def start_transcode_job(self, vid):
         """ TBD """
 
-        os.chdir(vid.filedir)
+        os.chdir(os.path.dirname(vid.filepath))
 
         ## print(f'standard_name2: {do_rename=} {standard_name=})')
         prefix = f'/heap/samples/SAMPLE.{self.opts.quality}' if self.opts.sample else 'TEMP'
@@ -1044,7 +1048,7 @@ class Converter:
                 co_over = ' ' if vid.codec_ok else '^'
                 mins = int(round(vid.duration / 60))
                 line = f'{vid.doit:>3} {vid.net} {vid.bloat:5}{br_over} {res:>5}{ht_over}'
-                line += f' {vid.codec:>5}{co_over} {mins:>4} {vid.gb:>6}   {basename} ON {dirname}'
+                line += f' {vid.codec:>5}{co_over} {mins:>4} {vid.gb:>6}   {basename} =ON= {dirname}'
                 if self.spins.search:
                     match = re.search(self.spins.search, line, re.IGNORECASE)
                     if not match:
@@ -1087,8 +1091,8 @@ class Converter:
         others={ord(' '), ord('g')}
         self.spins = spins = spin.default_obj
 
-        self.win = win = ConsoleWindow(
-            keys=spin.keys^others, body_rows=10+len(self.vids))
+        self.win = win = ConsoleWindow(keys=spin.keys^others,
+                        body_rows=10+len(self.vids), ctrl_c_terminates=False)
         self.state = 'select'
 
         win.set_pick_mode(True, 1)
@@ -1158,9 +1162,11 @@ class Converter:
                 if spins.quit:
                     if self.job:
                         self.job.ffsubproc.stop()
-                        self.job.vid.doit = 'ABT'
+                        self.job.vid.doit = '[X]'
                         self.job = None
-                        break
+                    self.state = 'select'
+                    spins.quit = False
+                    continue
                 if self.job:
                     while True:
                         if self.opts.dry_run:
