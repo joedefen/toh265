@@ -30,10 +30,10 @@ from types import SimpleNamespace
 from datetime import timedelta
 import send2trash
 from console_window import ConsoleWindow, OptionSpinner
-from ProbeCache import ProbeCache
-from VideoParser import VideoParser, Mangler
-from IniManager import IniManager
-from RotatingLogger import RotatingLogger
+from .ProbeCache import ProbeCache
+from .VideoParser import VideoParser, Mangler
+from .IniManager import IniManager
+from .RotatingLogger import RotatingLogger
 
 lg = RotatingLogger('rmbloat')
 
