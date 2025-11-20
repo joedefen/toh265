@@ -7,8 +7,14 @@ module = "rmbloat" # This must match the name you use for your code or package
 author = "Joe Defen"
 author-email = "joedef@duck.com"
 home-page = "https://github.com/joedefen/rmbloat"
-description = "An intelligent FFmpeg utility for prioritizing and converting inefficient video files (BLOAT score)."
+description-file = "README.md"
+# "An intelligent FFmpeg utility for prioritizing and converting inefficient video files (BLOAT score)."
 requires = [
+    "console-window>=1.0.2",
+    "ruamel.yaml>=0.18.16",
+    "ruamel.yaml.clib>=0.2.15",
+    "Send2Trash>=1.8.3",
+
 ]
 classifiers = [
     "License :: OSI Approved :: MIT License",
@@ -21,5 +27,4 @@ classifiers = [
 ]
 
 [tool.flit.scripts]
-rmbloat = "rmbloat:main" # Defines the command line entry point.
-                         # This assumes you add a function called 'main' to rmbloat.py.
+rmbloat = "rmbloat.rmbloat:main" # Defines the command line entry point.
