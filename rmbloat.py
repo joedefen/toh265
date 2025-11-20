@@ -35,7 +35,7 @@ from VideoParser import VideoParser
 from IniManager import IniManager
 from RotatingLogger import RotatingLogger
 
-lg = RotatingLogger('toh265')
+lg = RotatingLogger('rmbloat')
 
 # pylint: disable=too-many-locals,line-too-long,broad-exception-caught
 # pylint: disable=no-else-return,too-many-branches
@@ -1214,7 +1214,7 @@ class Converter:
         video_files.sort(key=lambda vid: vid.probe.bloat, reverse=True)
 
         if not video_files:
-            print("Usage: toh265 {options} {video_file}...")
+            print("Usage: rmbloat {options} {video_file}...")
             sys.exit(1)
 
         # --- The main loop change is here ---
@@ -1241,7 +1241,7 @@ def main(args=None):
     Convert video files to desired form
     """
     try:
-        cfg = IniManager(app_name='toh265',
+        cfg = IniManager(app_name='rmbloat',
                                keep_backup=False,
                                bloat_thresh=1600,
                                thread_cnt=3,

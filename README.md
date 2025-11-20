@@ -1,4 +1,4 @@
-# toh265
+# rmbloat
 convert video files to h65 with defaulted compression and conditionally
 
 ## What is Done
