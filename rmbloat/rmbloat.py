@@ -1091,89 +1091,117 @@ class Converter:
                 vid.doit = '[X]' if vid.doit == '[ ]' else '[ ]'
 
         spin = OptionSpinner()
-        spin.add_key('set_all', 's - set all to "[X]"', vals=[False, True])
-        spin.add_key('reset_all', 'r - reset all to "[ ]"', vals=[False, True])
-        spin.add_key('init_all', 'i,SP - set all initial state', vals=[False, True])
-        spin.add_key('toggle', 't - toggle current line state', vals=[False, True])
-        spin.add_key('quit', 'q - quit converting OR exit app', vals=[False, True])
+        spin.add_key('help_mode', '? - help screen', vals=[False, True])
+        spin.add_key('set_all', 's - set all to "[X]"', category='action')
+        spin.add_key('reset_all', 'r - reset all to "[ ]"', category='action')
+        spin.add_key('init_all', 'i,SP - set all initial state', category='action')
+        spin.add_key('toggle', 'SP - toggle current line state', category='action',
+                     keys={ord(' '), })
+        spin.add_key('go', 'g - begin conversions', category='action')
+        spin.add_key('quit', 'q - quit converting OR exit app', category='action')
         spin.add_key('search', '/ - search string',
                           prompt='Set search string, then Enter')
         spin.add_key('mangle', 'm - mangle titles', vals=[False, True])
-        spin.add_key('help', '? - help screen', vals=[False, True])
 
-        others={ord(' '), ord('g')}
         self.spins = spins = spin.default_obj
 
-        self.win = win = ConsoleWindow(keys=spin.keys^others,
+        self.win = win = ConsoleWindow(keys=spin.keys,
                         body_rows=10+len(self.vids), ctrl_c_terminates=False)
         self.state = 'select'
 
         win.set_pick_mode(True, 1)
+        not_help_state = self.state
 
         while True:
-            lines, stats = make_lines()
-            if self.state == 'select':
-                head = '[s]etAll [r]setAll [i]nit SP:toggle [g]o [q]uit'
-                if self.opts.dry_run:
-                    head += ' DRY-RUN'
-                if self.opts.sample:
-                    head += ' SAMPLE'
-                if spins.search:
-                    head += f' /{spins.search}'
-                win.add_header(head)
-            win.add_header(f'     Picked={stats.picked}/{stats.total}')
-            if self.state != 'select':
-                win.add_header(f' Done={stats.done} q[uit]', resume=True)
 
-            win.add_header(f'CVT {"NET":>4} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO')
-            if self.state == 'convert':
-                win.pick_pos = stats.progress_idx
-                win.scroll_pos = stats.progress_idx - win.scroll_view_size
-            for line in lines:
-                win.add_body(line)
+            if self.state == 'help':
+                spin.show_help_nav_keys(win)
+                spin.show_help_body(win)
+            else:
+                lines, stats = make_lines()
+                if self.state == 'select':
+                    head = '[s]etAll [r]setAll [i]nit SP:toggle [g]o ?=help [q]uit'
+                    if self.opts.dry_run:
+                        head += ' DRY-RUN'
+                    if self.opts.sample:
+                        head += ' SAMPLE'
+                    if spins.search:
+                        head += f' /{spins.search}'
+                    win.add_header(head)
+                win.add_header(f'     Picked={stats.picked}/{stats.total}')
+                if self.state != 'select':
+                    win.add_header(f' Done={stats.done} ?=help q[uit]', resume=True)
+
+                win.add_header(f'CVT {"NET":>4} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO')
+                if self.state == 'convert':
+                    win.pick_pos = stats.progress_idx
+                    win.scroll_pos = stats.progress_idx - win.scroll_view_size
+                for line in lines:
+                    win.add_body(line)
+
             win.render()
             key = win.prompt(seconds=0.5) # Wait for half a second or a keypress
             if key in spin.keys:
                 spin.do_key(key, win)
 
-            if self.state == 'select':
-                if spins.set_all:
+            if spins.help_mode:
+                if self.state != 'help':
+                    # enter help mode
+                    not_help_state = self.state
+                    self.state = 'help'
+                    win.set_pick_mode(False, 1)
+            else:
+                if self.state == 'help':
+                    # leave help mode
+                    self.state = not_help_state
+                    if self.state == 'select':
+                        win.set_pick_mode(True, 1)
+                    else:
+                        win.set_pick_mode(False, 1)
+
+            if spins.set_all:
+                spins.set_all = False
+                if self.state == 'select':
                     for vid in self.visible_vids:
                         if not self.dont_doit(vid):
                             vid.doit = '[X]'
-                    spins.set_all = False
 
-                if spins.reset_all:
+            if spins.reset_all:
+                spins.reset_all = False
+                if self.state == 'select':
                     for vid in self.visible_vids:
                         if vid.doit in ('[ ]', '[X]'):
                             vid.doit = '[ ]'
-                    spins.reset_all = False
 
-                if spins.init_all:
+            if spins.init_all:
+                spins.init_all = False
+                if self.state == 'select':
                     for vid in self.visible_vids:
                         if vid.doit in ('[ ]', '[X]'):
                             if self.dont_doit(vid) or vid.all_ok:
                                 vid.doit = '[ ]'
                             else:
                                 vid.doit = '[X]'
-                    spins.init_all = False
 
-                if spins.toggle or key == ord(' '):
+            if spins.toggle:
+                spins.toggle = False
+                if self.state == 'select':
                     idx = win.pick_pos
                     if 0 <= idx < len(self.visible_vids):
                         toggle_doit(self.visible_vids[idx])
-                        spins.toggle = False
                         win.pick_pos += 1
 
-                if key == ord('g'):
+            if spins.go:
+                spins.go = False
+                if self.state == 'select':
                     self.state = 'convert'
                         # self.win.set_pick_mode(False, 1)
 
-                if spins.quit:
+            if spins.quit:
+                spins.quit = False
+                if self.state == 'select':
                     sys.exit(0)
-            if self.state == 'convert':
-                if spins.quit:
-                    spins.quit = False
+                elif self.state == 'convert':
                     if self.job:
                         self.job.ffsubproc.stop()
                         self.job.vid.doit = '[X]'
@@ -1182,53 +1210,54 @@ class Converter:
                     self.vids.sort(key=lambda vid: vid.bloat, reverse=True)
                     win.set_pick_mode(True, 1)
                     continue
-                if self.job:
-                    while True:
-                        if self.opts.dry_run:
-                            delta = time.monotonic() - self.job.start_mono 
-                            got = 0 if delta >= 3 else f'{delta=}'
-                        else:
-                            got = self.get_job_progress(self.job)
-                        if isinstance(got, str):
-                            self.job.progress = got
-                        elif isinstance(got, int):
-                            self.job.vid.doit = ' OK' if got == 0 else 'ERR'
-                            self.finish_transcode_job(
-                                success=bool(got == 0), job=self.job)
-                            dumped = vars(self.job.vid)
-                            if self.job.vid.probe0:
-                                dumped['probe0'] = vars(dumped['probe0'])
-                            if self.job.vid.probe1:
-                                dumped['probe1'] = vars(dumped['probe1'])
-                            if got == 0:
-                                dumped['texts'] = []
-                            
-                            if self.opts.sample:
-                                title = 'SAMPLE'
-                            elif self.opts.dry_run:
-                                title = 'DRY-RUN'
-                            else:
-                                title = 'RE-ENCODE-TO-H265'
 
-                            lg.put('OK' if got == 0 else 'ERR',
-                                title + ' ', json.dumps(dumped, indent=4))
-                            self.job = None 
-                            break
+            if self.state == 'convert' and self.job:
+                while True:
+                    if self.opts.dry_run:
+                        delta = time.monotonic() - self.job.start_mono 
+                        got = 0 if delta >= 3 else f'{delta=}'
+                    else:
+                        got = self.get_job_progress(self.job)
+                    if isinstance(got, str):
+                        self.job.progress = got
+                    elif isinstance(got, int):
+                        self.job.vid.doit = ' OK' if got == 0 else 'ERR'
+                        self.finish_transcode_job(
+                            success=bool(got == 0), job=self.job)
+                        dumped = vars(self.job.vid)
+                        if self.job.vid.probe0:
+                            dumped['probe0'] = vars(dumped['probe0'])
+                        if self.job.vid.probe1:
+                            dumped['probe1'] = vars(dumped['probe1'])
+                        if got == 0:
+                            dumped['texts'] = []
+                        
+                        if self.opts.sample:
+                            title = 'SAMPLE'
+                        elif self.opts.dry_run:
+                            title = 'DRY-RUN'
                         else:
-                            break
+                            title = 'RE-ENCODE-TO-H265'
+
+                        lg.put('OK' if got == 0 else 'ERR',
+                            title + ' ', json.dumps(dumped, indent=4))
+                        self.job = None 
+                        break
+                    else:
+                        break
+            if self.state == 'convert' and not self.job:
+                for vid in self.visible_vids:
+                    if not vid:
+                        continue
+                    if vid.doit == '[X]':
+                        self.prev_time_encoded_secs = -1
+                        self.job = self.start_transcode_job(vid)
+                        vid.doit = 'IP '
+                        break
                 if not self.job:
-                    for vid in self.visible_vids:
-                        if not vid:
-                            continue
-                        if vid.doit == '[X]':
-                            self.prev_time_encoded_secs = -1
-                            self.job = self.start_transcode_job(vid)
-                            vid.doit = 'IP '
-                            break
-                    if not self.job:
-                        self.state = 'select'
-                        self.vids.sort(key=lambda vid: vid.bloat, reverse=True)
-                        win.set_pick_mode(True, 1)
+                    self.state = 'select'
+                    self.vids.sort(key=lambda vid: vid.bloat, reverse=True)
+                    win.set_pick_mode(True, 1)
 
             win.clear()
 

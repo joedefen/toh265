@@ -61,8 +61,8 @@ class IniManager:
             if file_keys != default_keys:
                 print(f"INFO: Config mismatch detected in '{self.config_file_path}'. Updating INI file.")
                 is_file_missing_or_mismatch = True
-            else:
-                print(f"INFO: Config file read successfully from '{self.config_file_path}'.")
+            # else:
+                # print(f"INFO: Config file read successfully from '{self.config_file_path}'.")
 
         # 3. If file was missing or structure didn't match, write the current state
         if is_file_missing_or_mismatch:
