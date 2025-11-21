@@ -3,13 +3,20 @@
 """
 TBD
 TODO:
-- allow /search in select mode
-- disallow /search in convert mode
-- hide unselected in convert mode
-x ensure the 10% better is enforced and the NET is computed
-- expose/spin samples as option -- make samples-dir and option
-- make cmf (or quality) a spinner / expose it
-- expose bloat thresh (change by 100? or prompt for it)
+- show GB and net savings
+- ensure the 10% better is enforced and the NET is computed
+    - need an option
+- show cpu consumption/max
+- error strategy
+  - to the probe cache, add an "exception" field
+  - For errors in transcoding, I was thinking of exception values "Er1" ... "Er9" where the number is
+    the number of prior failures capped at 9.   When automatically selecting videos, Er1 would be ignored,
+    in effect, and Er2 or higher would be blocked showing "Er2" instead of a checkbox ... but it
+    would act as unchecked "[ ]" so it could be manually checked showing [X].
+ - Similarly, if there was not enough space reduction, the exception value would be "OPT"
+   (already space optimized ... a better designation?), and again those act as if unchecked and
+   can be manually checked (for re-encoding ... presumably because the CMF option was changed
+   or something that might allow the encoding to succeed.)
 """
 import sys
 import os
@@ -291,7 +298,10 @@ class FfmpegMon:
         """
         if self.process and self.process.poll() is None:
             self.process.terminate()
-            self.process.wait(timeout=5) # Wait for it to die gracefully
+            try:
+                self.process.wait(timeout=15) # Wait for it to die gracefully
+            except Exception as exc:
+                pass  # hope for the best
         os.unlink(self.temp_file) if self.temp_file and os.path.exists(self.temp_file) else None
         self.temp_file = None
         self.process = None
@@ -367,6 +377,7 @@ class Converter:
         self.win = None
         self.opts = opts
         self.spins = None # spinner values
+        self.search_re = None # the "accepted" search
         self.vids = []
         self.visible_vids = []
         self.original_cwd = os.getcwd()
@@ -1039,6 +1050,7 @@ class Converter:
             nonlocal self
             lines, self.visible_vids = [], []
             stats = SimpleNamespace(total=0, picked=0, done=0, progress_idx=0)
+            jobcnt = 0
 
             for vid in self.vids:
                 if self.state == 'convert' and vid.doit == '[ ]':
@@ -1073,6 +1085,7 @@ class Converter:
                 # nses.append(vid)
                 self.visible_vids.append(vid)
                 if self.job and self.job.vid == vid:
+                    jobcnt += 1
                     lines.append(f'-----> {self.job.progress}')
                     stats.progress_idx = len(self.visible_vids)
                     self.visible_vids.append(None)
@@ -1081,8 +1094,38 @@ class Converter:
                         self.win.set_pick_mode(False)
 
                 # print(line)
-            stats.total = len(self.visible_vids)
+            stats.total = len(self.visible_vids) - jobcnt
             return lines, stats
+        
+        def render_screen():
+            nonlocal self, spin, win
+            if self.state == 'help':
+                spin.show_help_nav_keys(win)
+                spin.show_help_body(win)
+            else:
+                lines, stats = make_lines()
+                if self.state == 'select':
+                    head = '[s]etAll [r]setAll [i]nit SP:toggle [g]o ?=help [q]uit'
+                    if self.opts.dry_run:
+                        head += ' DRY-RUN'
+                    if self.opts.sample:
+                        head += ' SAMPLE'
+                    if self.search_re:
+                        shown = Mangler.mangle(self.search_re) if spins.mangle else self.search_re
+                        head += f' /{shown}'
+                    win.add_header(head)
+                    win.add_header(f'     Picked={stats.picked}/{stats.total}')
+                if self.state == 'convert':
+                    win.add_header(f' ?=help q[uit]')
+                    win.add_header(f'     ToDo={stats.total-stats.done}/{stats.total}', resume=True)
+
+                win.add_header(f'CVT {"NET":>4} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO')
+                if self.state == 'convert':
+                    win.pick_pos = stats.progress_idx
+                    win.scroll_pos = stats.progress_idx - win.scroll_view_size
+                for line in lines:
+                    win.add_body(line)
+            win.render()
 
         def toggle_doit(vid):
             if self.dont_doit(vid):
@@ -1114,32 +1157,8 @@ class Converter:
 
         while True:
 
-            if self.state == 'help':
-                spin.show_help_nav_keys(win)
-                spin.show_help_body(win)
-            else:
-                lines, stats = make_lines()
-                if self.state == 'select':
-                    head = '[s]etAll [r]setAll [i]nit SP:toggle [g]o ?=help [q]uit'
-                    if self.opts.dry_run:
-                        head += ' DRY-RUN'
-                    if self.opts.sample:
-                        head += ' SAMPLE'
-                    if spins.search:
-                        head += f' /{spins.search}'
-                    win.add_header(head)
-                win.add_header(f'     Picked={stats.picked}/{stats.total}')
-                if self.state != 'select':
-                    win.add_header(f' Done={stats.done} ?=help q[uit]', resume=True)
+            render_screen()
 
-                win.add_header(f'CVT {"NET":>4} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO')
-                if self.state == 'convert':
-                    win.pick_pos = stats.progress_idx
-                    win.scroll_pos = stats.progress_idx - win.scroll_view_size
-                for line in lines:
-                    win.add_body(line)
-
-            win.render()
             key = win.prompt(seconds=0.5) # Wait for half a second or a keypress
             if key in spin.keys:
                 spin.do_key(key, win)
@@ -1158,6 +1177,21 @@ class Converter:
                         win.set_pick_mode(True, 1)
                     else:
                         win.set_pick_mode(False, 1)
+
+            if spins.search != self.search_re:
+                valid = True
+                if self.state != 'select':
+                    win.alert(message='Cannot change search unless in select screen')
+                    valid = False
+                try:
+                    re.compile(spins.search)
+                except Exception as exc:
+                    win.alert(message=f'Ignoring invalid search: {exc}')
+                    valid = False
+                if valid:
+                    self.search_re = spins.search
+                else: # ignore pattern changes unless in select or if won't compile
+                    spins.search = self.search_re
 
             if spins.set_all:
                 spins.set_all = False
@@ -1211,7 +1245,7 @@ class Converter:
                     win.set_pick_mode(True, 1)
                     continue
 
-            if self.state == 'convert' and self.job:
+            if self.job and self.state in ('convert', 'help'):
                 while True:
                     if self.opts.dry_run:
                         delta = time.monotonic() - self.job.start_mono 
