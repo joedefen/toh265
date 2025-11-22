@@ -1112,7 +1112,8 @@ class Converter:
         def make_lines(doit_skips=None):
             nonlocal self
             lines, self.visible_vids = [], []
-            stats = SimpleNamespace(total=0, picked=0, done=0, progress_idx=0)
+            stats = SimpleNamespace(total=0, picked=0, done=0, progress_idx=0,
+                                    gb=0, delta_gb=0)
             jobcnt = 0
 
             for vid in self.vids:
@@ -1144,6 +1145,12 @@ class Converter:
                 if vid.doit not in ('[X]', '[ ]', 'IP '):
                     stats.done += 1
 
+                if vid.probe0:
+                    gb, delta_gb = vid.probe0.gb, 0
+                    if vid.probe1 and not self.opts.sample:
+                        delta_gb = vid.probe1.gb - gb
+                    stats.gb += gb
+                    stats.delta_gb += delta_gb
                 lines.append(line)
                 # nses.append(vid)
                 self.visible_vids.append(vid)
@@ -1158,6 +1165,8 @@ class Converter:
 
                 # print(line)
             stats.total = len(self.visible_vids) - jobcnt
+            stats.gb = round(stats.gb, 1)
+            stats.delta_gb = round(stats.delta_gb, 1)
             return lines, stats
         
         def render_screen():
@@ -1167,7 +1176,6 @@ class Converter:
                 spin.show_help_body(win)
             else:
                 lines, stats = make_lines()
-                self.cpu.update_stats()
                 if self.state == 'select':
                     head = '[s]etAll [r]setAll [i]nit SP:toggle [g]o ?=help [q]uit'
                     if self.opts.dry_run:
@@ -1179,11 +1187,15 @@ class Converter:
                         head += f' /{shown}'
                     win.add_header(head)
                     win.add_header(f'     Picked={stats.picked}/{stats.total}'
-                                   f' {self.cpu.get_status_string()}')
+                                   f'  GB={stats.gb}({stats.delta_gb})'
+                                   f'  {self.cpu.get_status_string()}'
+                                   )
                 if self.state == 'convert':
                     win.add_header(f' ?=help q[uit]')
                     win.add_header(f'     ToDo={stats.total-stats.done}/{stats.total}'
-                                   f' {self.cpu.get_status_string()}', resume=True)
+                                   f'  GB={stats.gb}({stats.delta_gb})'
+                                   f'  {self.cpu.get_status_string()}'
+                                   , resume=True)
 
                 win.add_header(f'CVT {"NET":>4} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO')
                 if self.state == 'convert':
@@ -1328,7 +1340,7 @@ class Converter:
                         self.job.vid.doit = ' OK' if got == 0 else 'ERR'
                         self.finish_transcode_job(
                             success=bool(got == 0), job=self.job)
-                        dumped = vars(self.job.vid)
+                        dumped = dict(vars(self.job.vid))
                         if self.job.vid.probe0:
                             dumped['probe0'] = vars(dumped['probe0'])
                         if self.job.vid.probe1:

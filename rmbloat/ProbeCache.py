@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 import json
 import os
 import subprocess
@@ -11,7 +10,6 @@ class ProbeCache:
     def __init__(self, cache_file_name="video_probes.json", cache_dir_name="/tmp"):
         self.cache_path = os.path.join(cache_dir_name, cache_file_name)
         self.cache_data: Dict[str, Dict[str, Any]] = {}
-        # New: Tracks changes since the last store()
         self._dirty_count = 0 
         self.load()
 
@@ -32,12 +30,9 @@ class ProbeCache:
 
     def _get_metadata_with_ffprobe(self, file_path: str) -> Optional[SimpleNamespace]:
         """
-        Extracts video metadata using ffprobe. (Your existing logic)
+        Extracts video metadata using ffprobe and creates a SimpleNamespace object.
+        (Your existing logic)
         """
-        # ... (ffprobe command setup, error handling, and metadata parsing) ...
-        # [Placeholder for the large ffprobe code block]
-        # Assuming successful probe returns 'meta' SimpleNamespace
-
         if not os.path.exists(file_path):
             print(f"Error: File not found at '{file_path}'")
             return None
@@ -48,7 +43,15 @@ class ProbeCache:
         ]
 
         try:
-            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+            # Added timeout and improved error handling for subprocess
+            result = subprocess.run(
+                command, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True, 
+                check=True,
+                timeout=30 # Add a timeout to prevent hanging
+            )
             
             metadata = json.loads(result.stdout)
             
@@ -64,12 +67,17 @@ class ProbeCache:
             meta.height = int(video_stream.get('height', 0))
             meta.codec = video_stream.get('codec_name', 'unk_codec')
             
-            meta.bitrate = int(int(metadata["format"].get('bit_rate', 0))/1000) 
+            # Ensure safe integer conversion
+            bitrate_str = metadata["format"].get('bit_rate', '0')
+            meta.bitrate = int(int(bitrate_str)/1000) 
+            
             meta.duration = float(metadata["format"].get('duration', 0.0))
 
-            # meta.bloat = int(round((1000*1000*meta.bitrate)/(meta.height*meta.width)))
             area = meta.width * meta.height
-            meta.bloat = int(round((meta.bitrate / math.sqrt(area)) * 1000))
+            if area > 0:
+                meta.bloat = int(round((meta.bitrate / math.sqrt(area)) * 1000))
+            else:
+                meta.bloat = 0
             
             size_info = self._get_file_size_info(file_path)
             if size_info is None:
@@ -78,6 +86,7 @@ class ProbeCache:
             meta.gb = size_info['size_gb']
             meta.size_bytes = size_info['size_bytes']
 
+            # Check for dirty count to store cache
             if self._dirty_count >= 100:
                 self.store()
             
@@ -85,6 +94,9 @@ class ProbeCache:
 
         except FileNotFoundError:
             print("Error: ffprobe command not found. Ensure FFmpeg/ffprobe is installed and in your system PATH.")
+            return None
+        except subprocess.TimeoutExpired:
+            print(f"Error: ffprobe timed out for '{file_path}'.")
             return None
         except subprocess.CalledProcessError as e:
             print(f"Error running ffprobe for '{file_path}': [Code: {e.returncode}] {e.stderr.strip()}")
@@ -94,6 +106,11 @@ class ProbeCache:
             return None
 
     # --- Cache Management Methods ---
+    
+    def _load_probe_data(self, filepath: str) -> SimpleNamespace:
+        """Helper to convert stored dictionary back into SimpleNamespace."""
+        return SimpleNamespace(**self.cache_data[filepath]['probe_data'])
+
 
     def load(self):
         """Loads cache data from the temporary JSON file."""
@@ -104,9 +121,11 @@ class ProbeCache:
             except (IOError, json.JSONDecodeError):
                 print(f"Warning: Could not read cache file at {self.cache_path}. Starting fresh.")
                 self.cache_data = {}
+            
+            # IMPORTANT: We only call _get_valid_entry here to PURGE invalid entries, 
+            # NOT to convert the data. The data remains dicts in self.cache_data.
             for filepath in list(self.cache_data.keys()):
-                # in effect, purge invalid entries
-                _ = self._get_valid_entry(filepath)
+                self._get_valid_entry(filepath)
 
 
     def store(self):
@@ -114,23 +133,17 @@ class ProbeCache:
         if self._dirty_count > 0:
             try:
                 with open(self.cache_path, 'w') as f:
+                    # Note: self.cache_data contains dictionaries, which is JSON-serializable
                     json.dump(self.cache_data, f, indent=4)
                 
-                # Success! Clear the dirty count.
                 self._dirty_count = 0
-                # print(f"Cache stored successfully (dirty count cleared).")
                 
             except IOError as e:
-                pass
-                # print(f"Error writing cache file: {e}")
-        else:
-            pass
-            # print("Cache is clean. Disk write skipped.")
-
+                print(f"Error writing cache file: {e}")
+        
 
     def _set_cache(self, filepath: str, meta: SimpleNamespace):
         """Stores the metadata in the cache dictionary and marks the cache as dirty."""
-        # Use meta.size_bytes for validation
         validation_keys = {'size_bytes': meta.size_bytes}
             
         # Convert the SimpleNamespace back to a dict for JSON storage
@@ -140,14 +153,12 @@ class ProbeCache:
             'validation': validation_keys,
             'probe_data': probe_dict
         }
-        # New: Increment the dirty count
         self._dirty_count += 1 
 
     def _get_valid_entry(self, filepath: str):
         """ If the entry for the path is not valid, remove it.
-            Return the cached entry if valid, else None
+            Return the cached entry (as SimpleNamespace) if valid, else None
         """
-        # 1. Check if file exists on disk
         current_size_info = self._get_file_size_info(filepath)
         if current_size_info is None:
             if filepath in self.cache_data:
@@ -160,13 +171,13 @@ class ProbeCache:
             cached_bytes = self.cache_data[filepath]['validation']['size_bytes']
             
             if cached_bytes != current_size_info['size_bytes']:
-                # File deleted, invalidate cache entry (mark as dirty)
+                # File size changed, invalidate cache entry (mark as dirty)
                 del self.cache_data[filepath]
                 self._dirty_count += 1
                 return None
 
-            # Cache is VALID. Return the stored data.
-            return SimpleNamespace(**self.cache_data[filepath]['probe_data'])
+            # Cache is VALID. Return the stored data converted to SimpleNamespace.
+            return self._load_probe_data(filepath)
         return None
 
     def get(self, filepath: str) -> Optional[SimpleNamespace]:
@@ -175,17 +186,15 @@ class ProbeCache:
         stores result, and returns it (Read-Through Cache).
         """
         
-        # 1. Check if file exists on disk
-        # 2. Check for valid cache hit
+        # 1. Check for valid cache hit
         meta = self._get_valid_entry(filepath)
         if meta:
             return meta
         
-        # 3. Cache miss/invalid: Run ffprobe
-        # print(f"Cache miss/invalid for '{os.path.basename(filepath)}'. Running ffprobe...")
+        # 2. Cache miss/invalid: Run ffprobe
         meta = self._get_metadata_with_ffprobe(filepath)
 
-        # 4. Store result in cache if successful
+        # 3. Store result in cache if successful
         if meta:
             self._set_cache(filepath, meta)
         
