@@ -30,8 +30,9 @@ import re
 import time
 import fcntl
 import json
+import random
 from textwrap import indent
-from typing import Optional, Union
+from typing import Optional, Union, List
 from copy import copy
 from types import SimpleNamespace
 from datetime import timedelta
@@ -41,6 +42,8 @@ from .ProbeCache import ProbeCache
 from .VideoParser import VideoParser, Mangler
 from .IniManager import IniManager
 from .RotatingLogger import RotatingLogger
+from .CpuStatus import CpuStatus
+# from .SetupCgroup import set_cgroup_cpu_limit
 
 lg = RotatingLogger('rmbloat')
 
@@ -56,6 +59,10 @@ def store_cache_on_exit():
             Converter.singleton.win.stop_curses()
         if Converter.singleton.probe_cache:
             Converter.singleton.probe_cache.store()
+
+import random
+from typing import List
+
 
 ###
 ### import subprocess
@@ -392,6 +399,8 @@ class Converter:
         self.probe_cache.store()
         self.progress_line_mono = 0
         self.start_job_mono = 0
+        self.cpu = CpuStatus()
+        # self.cgroup_prefix = set_cgroup_cpu_limit(opts.thread_cnt*100)
         atexit.register(store_cache_on_exit)
 
     def apply_probe(self, vid, probe):
@@ -463,9 +472,43 @@ class Converter:
             
         return ' '.join(quoted_args)
 
+
+    def generate_taskset_core_list(self, desired_cores: int = 3) -> str:
+        """
+        Generates a comma-separated list of core indices for taskset, prioritizing 
+        physically separate cores when utilization is low (<= 50% of capacity).
+        Args:
+            total_logical_cores (int): Total logical cores (e.g., 16 for 8 cores with HT).
+            desired_cores (int): The number of cores to select (e.g., 3).
+        Returns:
+            str: A comma-separated string of unique core indices (e.g., "0,4,8").
+        """
+        total_logical_cores = self.cpu.core_count
+        desired_cores = max(1, min(total_logical_cores, desired_cores))
+        selected_cores = set()
+        mask = 0
+
+        # 1. Determine the step size based on utilization
+        # Half the total logical cores (e.g., 16 / 2 = 8). This is the number of physical cores.
+        step = 2 if desired_cores <= total_logical_cores // 2  else 1
+        
+        # 2. Choose a random starting core
+        current_core = random.randrange(desired_cores)
+        
+        # 3. Select the cores
+        for _ in range(desired_cores):
+            # Add the core, then use the step and modulo operation to find the next one
+            selected_cores.add(current_core)
+            mask += 1<<current_core
+            current_core = (current_core + step) % total_logical_cores
+
+        # 4. Format and return
+        # Sort for cleaner display, then convert to string
+        return f'{mask:#x}'
+        # return '--cpu-set " + ",".join(map(str, sorted(list(selected_cores))))
+
     def start_transcode_job(self, vid):
         """ TBD """
-
         os.chdir(os.path.dirname(vid.filepath))
         basename = os.path.basename(vid.filepath)
 
@@ -484,11 +527,25 @@ class Converter:
         pre_i_opts, post_i_opts = copy(self.ff_pre_i_opts), copy(self.ff_post_i_opts)
         job.input_file = basename
 
-        nice_opts, thread_opts = [], []
+       # --- NEW LIMITING LOGIC ---
+        shell_priority_opts, quota_opts, thread_opts = [], [], []
+
         if not self.opts.full_speed:
-            nice_opts = 'ionice -c3 nice -n19'.split()
-            if self.opts.thread_cnt > 0:
-                thread_opts = ['-threads', f'{self.opts.thread_cnt}']
+#           cpu_quota_pct = self.opts.thread_cnt * 100
+#           if cpu_quota_pct > 0:
+#               quota_opts = [
+#                   'systemd-run',
+#                   '--user',
+#                   '--scope',
+#                   f'--unit="rmbloat-transcode.scope"',
+#                   f'--property=CPUQuota={cpu_quota_pct}%',
+#           ]
+            shell_priority_opts = ['ionice', '-c3', 'nice', '-n20']
+            
+            # The thread_opts logic remains here if you need to pass it to FFmpeg
+            # if self.opts.thread_cnt > 0:
+            #     thread_opts = ['-x265-params', f'pools={self.opts.thread_cnt}']
+
 
         if self.opts.sample:
             start_secs = max(120, job.duration_secs)*.20
@@ -500,7 +557,8 @@ class Converter:
 
         # Define the FFmpeg command
         ffmpeg_cmd = [
-            * nice_opts,
+            * quota_opts,
+            * shell_priority_opts,
             'ffmpeg',
             '-y',                           # Overwrite temp file if exists
             # '-v', 'error',                  # suppress INFO/WARNINGS
@@ -1104,6 +1162,7 @@ class Converter:
                 spin.show_help_body(win)
             else:
                 lines, stats = make_lines()
+                self.cpu.update_stats()
                 if self.state == 'select':
                     head = '[s]etAll [r]setAll [i]nit SP:toggle [g]o ?=help [q]uit'
                     if self.opts.dry_run:
@@ -1114,10 +1173,12 @@ class Converter:
                         shown = Mangler.mangle(self.search_re) if spins.mangle else self.search_re
                         head += f' /{shown}'
                     win.add_header(head)
-                    win.add_header(f'     Picked={stats.picked}/{stats.total}')
+                    win.add_header(f'     Picked={stats.picked}/{stats.total}'
+                                   f' {self.cpu.get_status_string()}')
                 if self.state == 'convert':
                     win.add_header(f' ?=help q[uit]')
-                    win.add_header(f'     ToDo={stats.total-stats.done}/{stats.total}', resume=True)
+                    win.add_header(f'     ToDo={stats.total-stats.done}/{stats.total}'
+                                   f' {self.cpu.get_status_string()}', resume=True)
 
                 win.add_header(f'CVT {"NET":>4} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO')
                 if self.state == 'convert':
@@ -1141,7 +1202,8 @@ class Converter:
         spin.add_key('toggle', 'SP - toggle current line state', category='action',
                      keys={ord(' '), })
         spin.add_key('go', 'g - begin conversions', category='action')
-        spin.add_key('quit', 'q - quit converting OR exit app', category='action')
+        spin.add_key('quit', 'q - quit converting OR exit app', category='action',
+                     keys={ord('q'), 0x3})
         spin.add_key('search', '/ - search string',
                           prompt='Set search string, then Enter')
         spin.add_key('mangle', 'm - mangle titles', vals=[False, True])
