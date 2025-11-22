@@ -1,20 +1,21 @@
 [build-system]
-requires = ["flit_core >=3.2,<4"]
+requires = ["flit_core>=3.4"]
 build-backend = "flit_core.buildapi"
 
-[tool.flit.metadata]
-module = "rmbloat" # This must match the name you use for your code or package
-author = "Joe Defen"
-author-email = "joedef@duck.com"
-home-page = "https://github.com/joedefen/rmbloat"
-description-file = "README.md"
-# "An intelligent FFmpeg utility for prioritizing and converting inefficient video files (BLOAT score)."
-requires = [
+[project]
+name = "rmbloat"
+version = "0.0.3"
+readme = "README.md"
+description = "An intelligent FFmpeg utility for prioritizing and converting inefficient video files (BLOAT score)."
+authors = [
+    { name = "Joe Defen", email = "joedef@duck.com" }
+]
+requires-python = ">=3.8"
+dependencies = [
     "console-window>=1.0.3",
     "ruamel.yaml>=0.18.16",
     "ruamel.yaml.clib>=0.2.15",
     "Send2Trash>=1.8.3",
-
 ]
 classifiers = [
     "License :: OSI Approved :: MIT License",
@@ -26,5 +27,11 @@ classifiers = [
     "Topic :: Multimedia :: Video",
 ]
 
-[tool.flit.scripts]
-rmbloat = "rmbloat.rmbloat:main" # Defines the command line entry point.
+[project.urls]
+"Homepage" = "https://github.com/joedefen/rmbloat"
+
+[project.license]
+text = "MIT"
+
+[project.scripts]
+rmbloat = "rmbloat.rmbloat:main"
