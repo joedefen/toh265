@@ -581,7 +581,7 @@ class Converter:
         vid.command = self.bash_quote(ffmpeg_cmd)
         if not self.opts.dry_run:
             job.ffsubproc.start(ffmpeg_cmd)
-            self.progress_line_mono = time.monotonic() - 15.0
+            self.progress_line_mono = time.monotonic()
         return job
 
     def monitor_transcode_progress(self, job):
@@ -619,10 +619,12 @@ class Converter:
     def get_job_progress(self, job):
         """ TBD """
         vid = job.vid
+        secs_max = self.opts.progress_secs_max 
         while True:
             got = job.ffsubproc.poll()
+            now_mono = time.monotonic()
             # print(f'\r{delta=} {got=}')
-            if time.monotonic() - self.progress_line_mono > 30.0:
+            if now_mono - self.progress_line_mono > secs_max:
                 got = 254
                 vid.texts.append('PROGRESS TIMEOUT')
                 job.ffsubproc.stop(return_code=got)
@@ -636,6 +638,9 @@ class Converter:
                     vid.texts.append(line)
                     continue
 
+                if now_mono - self.progress_line_mono < 3:
+                    # don't update progress crazy often
+                    continue
                 self.progress_line_mono = time.monotonic()
                 # print(f'\r{self.progress_line_mono=} {line}')
 
@@ -650,8 +655,8 @@ class Converter:
                     ms = int(groups[4])
                     time_encoded_seconds = h * 3600 + m * 60 + s + ms / 100
                     time_encoded_seconds = round(int(time_encoded_seconds))
-                    if self.prev_time_encoded_secs == time_encoded_seconds:
-                        continue  # don't return too often
+#                   if self.prev_time_encoded_secs > 2 + time_encoded_seconds:
+#                       continue  # don't return too often
                     speed = float(match.group(6))
                 except Exception:
                     print(f"\n{line=} {groups=}")
@@ -1469,6 +1474,12 @@ def main(args=None):
         parser.add_argument('files', nargs='*',
             help='Video files and recursively scanned folders w Video files')
         opts = parser.parse_args(args)
+            # Fake as option ... if this needs tuning (which I doubt)
+            # then make it an actual option.  It is the max time allowed
+            # between progress updates when converting a video
+        opts.progress_secs_max = 30
+
+
         if opts.save_defaults:
             print('Setting new defaults:')
             for key in vars(vals):
@@ -1494,6 +1505,7 @@ def main(args=None):
                 # Catch any other execution errors
                 print(f"An error occurred during exec: {e}", file=sys.stderr)
                 sys.exit(1)
+
 
         if opts.sample:
             opts.dry_run = False # cannot have both
