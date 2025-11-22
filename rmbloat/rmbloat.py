@@ -3,8 +3,6 @@
 """
 TBD
 TODO:
-- ensure the 10% better is enforced and the NET is computed
-    - need an option
 - error strategy
   - to the probe cache, add an "exception" field
   - For errors in transcoding, I was thinking of exception values "Er1" ... "Er9" where the number is
@@ -16,6 +14,12 @@ TODO:
    can be manually checked (for re-encoding ... presumably because the CMF option was changed
    or something that might allow the encoding to succeed.)
 """
+# pylint: disable=too-many-locals,line-too-long,broad-exception-caught
+# pylint: disable=no-else-return,too-many-branches
+# pylint: disable=too-many-return-statements,too-many-instance-attributes
+# pylint: disable=consider-using-with,line-too-long,too-many-lines
+# pylint: disable=too-many-nested-blocks,try-except-raise
+
 import sys
 import os
 import math
@@ -30,8 +34,7 @@ import fcntl
 import json
 import random
 import curses
-from textwrap import indent
-from typing import Optional, Union, List
+from typing import Optional, Union
 from copy import copy
 from types import SimpleNamespace
 from datetime import timedelta
@@ -46,11 +49,6 @@ from .CpuStatus import CpuStatus
 
 lg = RotatingLogger('rmbloat')
 
-# pylint: disable=too-many-locals,line-too-long,broad-exception-caught
-# pylint: disable=no-else-return,too-many-branches
-# pylint: disable=too-many-return-statements,too-many-instance-attributes
-# pylint: disable=consider-using-with
-
 def store_cache_on_exit():
     """ TBD """
     if Converter.singleton:
@@ -59,8 +57,6 @@ def store_cache_on_exit():
         if Converter.singleton.probe_cache:
             Converter.singleton.probe_cache.store()
 
-import random
-from typing import List
 
 
 ###
@@ -306,9 +302,10 @@ class FfmpegMon:
             self.process.terminate()
             try:
                 self.process.wait(timeout=15) # Wait for it to die gracefully
-            except Exception as exc:
+            except Exception:
                 pass  # hope for the best
-        os.unlink(self.temp_file) if self.temp_file and os.path.exists(self.temp_file) else None
+        if self.temp_file and os.path.exists(self.temp_file):
+            os.unlink(self.temp_file)
         self.temp_file = None
         self.process = None
         self.partial_line = ""
@@ -402,6 +399,17 @@ class Converter:
         # self.cgroup_prefix = set_cgroup_cpu_limit(opts.thread_cnt*100)
         atexit.register(store_cache_on_exit)
 
+    def is_allowed_codec(self, probe):
+        """ Return whether the codec is 'allowed' """
+        if not probe:
+            return True
+        codec_ok = bool(self.opts.allowed_codecs == 'all')
+        if self.opts.allowed_codecs == 'x265':
+            codec_ok = bool(probe.codec in ('hevc',))
+        if self.opts.allowed_codecs == 'x26*':
+            codec_ok = bool(probe.codec in ('hevc','h264'))
+        return codec_ok
+
     def apply_probe(self, vid, probe):
         """ TBD """
         # shorthand
@@ -412,11 +420,7 @@ class Converter:
         vid.duration = probe.duration
         vid.gb = probe.gb
 
-        vid.codec_ok = bool(self.opts.allowed_codecs == 'all')
-        if self.opts.allowed_codecs == 'x265':
-            vid.codec_ok = bool(vid.codec in ('hevc',))
-        if self.opts.allowed_codecs == 'x26*':
-            vid.codec_ok = bool(vid.codec in ('hevc','h264'))
+        vid.codec_ok = self.is_allowed_codec(probe)
 
         vid.res_ok = bool(vid.height is not None and vid.height <= self.TARGET_HEIGHT)
         vid.bloat_ok = bool(vid.bloat < self.opts.bloat_thresh)
@@ -455,11 +459,11 @@ class Converter:
         self.vids.append(vid)
 
         vid.doit = '[ ]' if vid.all_ok or self.dont_doit(vid) else '[X]'
-    
+
     @staticmethod
     def bash_quote(args):
         """
-        Converts a Python list of arguments into a single, properly quoted 
+        Converts a Python list of arguments into a single, properly quoted
         Bash command string.
         """
         quoted_args = []
@@ -468,13 +472,13 @@ class Converter:
             # shlex.quote is the preferred, robust way in Python 3.3+
             quoted_arg = shlex.quote(arg)
             quoted_args.append(quoted_arg)
-            
+
         return ' '.join(quoted_args)
 
 
     def generate_taskset_core_list(self, desired_cores: int = 3) -> str:
         """
-        Generates a comma-separated list of core indices for taskset, prioritizing 
+        Generates a comma-separated list of core indices for taskset, prioritizing
         physically separate cores when utilization is low (<= 50% of capacity).
         Args:
             total_logical_cores (int): Total logical cores (e.g., 16 for 8 cores with HT).
@@ -490,10 +494,10 @@ class Converter:
         # 1. Determine the step size based on utilization
         # Half the total logical cores (e.g., 16 / 2 = 8). This is the number of physical cores.
         step = 2 if desired_cores <= total_logical_cores // 2  else 1
-        
+
         # 2. Choose a random starting core
         current_core = random.randrange(desired_cores)
-        
+
         # 3. Select the cores
         for _ in range(desired_cores):
             # Add the core, then use the step and modulo operation to find the next one
@@ -540,7 +544,7 @@ class Converter:
 #                   f'--property=CPUQuota={cpu_quota_pct}%',
 #           ]
             shell_priority_opts = ['ionice', '-c3', 'nice', '-n20']
-            
+
             # The thread_opts logic remains here if you need to pass it to FFmpeg
             # if self.opts.thread_cnt > 0:
             #     thread_opts = ['-x265-params', f'pools={self.opts.thread_cnt}']
@@ -615,10 +619,8 @@ class Converter:
     def get_job_progress(self, job):
         """ TBD """
         vid = job.vid
-        err = False
         while True:
             got = job.ffsubproc.poll()
-            delta = time.monotonic() - self.progress_line_mono
             # print(f'\r{delta=} {got=}')
             if time.monotonic() - self.progress_line_mono > 30.0:
                 got = 254
@@ -626,7 +628,7 @@ class Converter:
                 job.ffsubproc.stop(return_code=got)
                 self.progress_line_mono = time.monotonic() + 1000000000
                 continue
-            
+
             if isinstance(got, str):
                 line = got
                 match = self.PROGRESS_RE.search(line)
@@ -938,7 +940,7 @@ class Converter:
             else:
                 net = (vid.gb - probe.gb) / vid.gb
                 net = int(round(-net*100))
-            if net > -10:
+            if self.is_allowed_codec(probe) and net > -self.opts.min_shrink_pct:
                 success = False
             vid.net = f'{net}%'
 
@@ -1166,7 +1168,7 @@ class Converter:
             stats.gb = round(stats.gb, 1)
             stats.delta_gb = round(stats.delta_gb, 1)
             return lines, stats
-        
+
         def render_screen():
             nonlocal self, spin, win
             if self.state == 'help':
@@ -1189,11 +1191,14 @@ class Converter:
                                    f'  {self.cpu.get_status_string()}'
                                    )
                 if self.state == 'convert':
-                    win.add_header(f' ?=help q[uit]')
-                    win.add_header(f'     ToDo={stats.total-stats.done}/{stats.total}'
-                                   f'  GB={stats.gb}({stats.delta_gb})'
-                                   f'  {self.cpu.get_status_string()}'
-                                   , resume=True)
+                    head = ' ?=help q[uit]'
+                    if self.search_re:
+                        shown = Mangler.mangle(self.search_re) if spins.mangle else self.search_re
+                        head += f' /{shown}'
+                    head += (f'     ToDo={stats.total-stats.done}/{stats.total}'
+                                f'  GB={stats.gb}({stats.delta_gb})'
+                                f'  {self.cpu.get_status_string()}')
+                    win.add_header(head)
 
                 win.add_header(f'CVT {"NET":>4} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO')
                 if self.state == 'convert':
@@ -1328,7 +1333,7 @@ class Converter:
             if self.job and self.state in ('convert', 'help'):
                 while True:
                     if self.opts.dry_run:
-                        delta = time.monotonic() - self.job.start_mono 
+                        delta = time.monotonic() - self.job.start_mono
                         got = 0 if delta >= 3 else f'{delta=}'
                     else:
                         got = self.get_job_progress(self.job)
@@ -1345,7 +1350,7 @@ class Converter:
                             dumped['probe1'] = vars(dumped['probe1'])
                         if got == 0:
                             dumped['texts'] = []
-                        
+
                         if self.opts.sample:
                             title = 'SAMPLE'
                         elif self.opts.dry_run:
@@ -1355,7 +1360,7 @@ class Converter:
 
                         lg.put('OK' if got == 0 else 'ERR',
                             title + ' ', json.dumps(dumped, indent=4))
-                        self.job = None 
+                        self.job = None
                         break
                     else:
                         break
@@ -1389,7 +1394,7 @@ class Converter:
         # --- The main loop change is here ---
         for vid in video_files:
             input_file_path_str = vid.video_file
-            file_dir, file_basename = os.path.split(input_file_path_str)
+            file_dir, _ = os.path.split(input_file_path_str)
             if not file_dir:
                 file_dir = os.path.abspath(os.path.dirname(input_file_path_str))
 
@@ -1398,7 +1403,7 @@ class Converter:
                 os.chdir(file_dir)
                 self.process_one_file(vid)
 
-            except Exception as e:
+            except Exception:
                 raise
                 # print(f"An error occurred while processing {file_basename}: {e}")
             finally:
@@ -1414,13 +1419,14 @@ def main(args=None):
         cfg = IniManager(app_name='rmbloat',
                                keep_backup=False,
                                bloat_thresh=1600,
-                               thread_cnt=3,
+#                              thread_cnt=3,
+                               min_shrink_pct=10,
                                quality=28,
                                allowed_codecs='x265',
                                full_speed=False)
         vals = cfg.vals
         parser = argparse.ArgumentParser(
-            description="A script that accepts dry-run, force, and debug flags.")
+            description="CLI/curses bulk Video converter for media servers")
         # config options
         parser.add_argument('-B', '--keep-backup',
                     action='store_false' if vals.keep_backup else 'store_true',
@@ -1439,16 +1445,20 @@ def main(args=None):
                     help=f'allowed codecs [dflt={vals.allowed_codecs}]')
         parser.add_argument('-F', '--full-speed',
                     action='store_false' if vals.full_speed else 'store_true',
-                    help=f'if true, do NOT set nice -n19, ionice -c3,'
-                        + f' and thread_cnt [dflt={vals.full_speed}]')
-        parser.add_argument('-t', '--thread-cnt',
-                    default=vals.thread_cnt, type=int,
-                    help='thread count for ffmpeg conversions'
-                        + f' [dflt={vals.thread_cnt}]')
+                    help='if true, do NOT set nice -n19 and ionice -c3'
+                        + f' dflt={vals.full_speed}]')
+#       parser.add_argument('-t', '--thread-cnt',
+#                   default=vals.thread_cnt, type=int,
+#                   help='thread count for ffmpeg conversions'
+#                       + f' [dflt={vals.thread_cnt}]')
+        parser.add_argument('-m', '--min-shrink-pct',
+                    default=vals.min_shrink_pct, type=int,
+                    help='minimum conversion reduction percent for replacement'
+                        + f' [dflt={vals.min_shrink_pct}]')
 
         # run-time options
         parser.add_argument('-S', '--save-defaults', action='store_true',
-                    help='save the -B/-b/-q/-a/-F/-t options as defaults')
+                    help='save the -B/-b/-q/-a/-F/-m options as defaults')
         parser.add_argument('-n', '--dry-run', action='store_true',
                     help='Perform a trial run with no changes made.')
         parser.add_argument('-s', '--sample', action='store_true',
@@ -1457,7 +1467,7 @@ def main(args=None):
                     help='view the logs')
 
         parser.add_argument('files', nargs='*',
-            help='Non-option arguments (e.g., file paths or names).')
+            help='Video files and recursively scanned folders w Video files')
         opts = parser.parse_args(args)
         if opts.save_defaults:
             print('Setting new defaults:')
@@ -1474,7 +1484,7 @@ def main(args=None):
             if os.path.isfile(files[1]):
                 cmd.append(files[1])
             try:
-                program = cmd[0] 
+                program = cmd[0]
                 # This call replaces the current Python process
                 os.execvp(program, cmd)
             except FileNotFoundError:

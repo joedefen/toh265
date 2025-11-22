@@ -1,57 +1,130 @@
 # rmbloat
-convert video files to h65 with defaulted compression and conditionally
+`rmbloat` easily converts your entire, aging video collection to h265. This is useful for size reduction and ensure efficient rendering on modern video players.
 
-## What is Done
-The project in python:
-* takes a list of video files and under certain criteria (the kbps is too big or the vertical resolution is too big) converts the file to x265 (1080p or actual resolution if smaller) using ffmpeg.
-* Ultimately, when good enuf, I'll likely make it a pypi project.
-* It shows progress very smartly and compactly
-* It renames files when resolution (TBD) or codec changes if the names had that info as well as companion files like .srt files.
+While this converter has many potential uses, it is geared towards doing mass conversions on a media server.  Since it is potentially very long running, t makes sense to start `rmbloat` in a tmux window that out-lives a log in session (say on a headless server).
 
-## What is TBD
-* I need to make it smarter about Intel QSV
-* deciding (tentatively) which video files to process up front
-* showing the complete list of video files in a curses "window" with those chosen to run automatically checked and have the ability to change what is checked
-* it would show the resolution, the kbps, file size, and codec for each,
-* it would then a GO command which would spawn the conversions in the background up to some number of jobs, showing status on each, allow aborting jobs not done
-* it would automatically scroll if needed to show the eldest job running, and, of course, job status as percent done, ETA, etc.
-* it would have a .json file (in its config directory) that has the last set of criteria which can be changed in the gui
+### Easy Installation
+To install `rmbloat`, use `pipx rmbloat`. If needed, see [Install and Execute Python Applications Using pipx](https://realpython.com/python-pipx/).
 
+### Bloat Metric
+`rmbloat` defines `bloat = 1000 * bitrate / sqrt(height*width)`.  A bloat value of 1000, roughly is an aggressively compressed h265 file. It is common to see bloats of 4000 or more; very bloated files can typically be reduced in size by a factor of 4 or more w/o too much loss of watchability.
 
-## Gemini Assessment of Final Project
-That is a very interesting project idea!
+## Using `rmbloat`
+### Starting `rmbloat` from the CLI
+`rmbloat` requires a list of files or directories to scan for conversion candidates.  The full list of options are:
+```
+usage: rmbloat.py [-h] [-B] [-b BLOAT_THRESH] [-q QUALITY] [-a {x26*,x265,all}] [-F] [-m MIN_SHRINK_PCT] [-S] [-n] [-s] [-L] [files ...]
 
-Here's a breakdown of your proposal's novelty and whether similar tools exist:
+CLI/curses bulk Video converter for media servers
 
-### 1. Overall Concept: Batch Conversion & Smart Selection
+positional arguments:
+  files                 Video files and recursively scanned folders w Video files
 
-* **Batch Conversion with FFmpeg:** This is **not novel**. There are many ways to do batch conversion with FFmpeg on Linux, typically using shell scripts (`for` loops) or existing GUI frontends. The search results show several examples of basic command-line batching and even GUI tools like "FFmpeg Batch AV Converter" (which supports QuickSync, multiple jobs, and auto-renaming).
-* **Smart Selection Criteria (kbps/resolution):** This part is **moderately novel** in a *dedicated* tool. While you can write a script to extract this data (using `ffprobe` or similar) and apply conditional logic, having it integrated into a comprehensive pre-selection interface is a valuable feature.
+options:
+  -h, --help            show this help message and exit
+  -B, --keep-backup     if true, rename to ORIG.{videofile} rather than recycle [dflt=False]
+  -b BLOAT_THRESH, --bloat-thresh BLOAT_THRESH
+                        bloat threshold to convert [dflt=1600,min=--save00]
+  -q QUALITY, --quality QUALITY
+                        output quality (CRF) [dflt=28]
+  -a {x26*,x265,all}, --allowed-codecs {x26*,x265,all}
+                        allowed codecs [dflt=x265]
+  -F, --full-speed      if true, do NOT set nice -n19 and ionice -c3 dflt=False]
+  -m MIN_SHRINK_PCT, --min-shrink-pct MIN_SHRINK_PCT
+                        minimum conversion reduction percent for replacement [dflt=10]
+  -S, --save-defaults   save the -B/-b/-q/-a/-F/-m options as defaults
+  -n, --dry-run         Perform a trial run with no changes made.
+  -s, --sample          produce 30s samples called SAMPLE.{input-file}
+  -L, --logs            view the logs
+  ```
+  You can customize the defaults by setting the desired options and adding the  `--save-defaults` option. Non-video files in the given files and directories are simply ignored.
 
-### 2. Proposed Features & Novelty
+  Candidate video files are probed (with `ffprobe`). If not probable, then the candidate is simply ignored. Probing a bunch of files can be time consuming, but `rmbloat` keeps a cache of probes so start-up can be fast if most candidates have been successfully probed.
 
-| Feature | Novelty for Linux/Open-Source | Existing Tools & Notes |
-| :--- | :--- | :--- |
-| **QSV Integration (Intel Quick Sync Video)** | **Not Novel** | FFmpeg supports QSV, and tools like "FFmpeg Batch AV Converter" or the popular media server software Tdarr (which uses FFmpeg) explicitly leverage it for hardware acceleration. Your smarter logic about *when* to use it is a good addition. |
-| **Interactive Curses Interface** | **Novel (and Cool!)** | While there are command-line tools for conversion, a dedicated, feature-rich **TUI (Text User Interface)** using `curses` for file selection, property viewing, and job management is **very novel** for this specific use case. Most alternatives are simple scripts or full graphical GUIs. A TUI hits a sweet spot for power users who prefer the terminal. |
-| **Pre-run Selection List (File Properties)** | **Moderately Novel** | Viewing file size, resolution, and codec *before* running is a great quality-of-life feature. It requires robust integration with a library like `ffprobe`. |
-| **Multi-Job Background Processing (with limit)** | **Not Novel** | Many batch converters (including the mentioned `FFmpeg Batch AV Converter` and server tools like Tdarr) handle parallel jobs. However, a `curses` interface that *manages* and *displays status* of these jobs is where the novelty of your approach lies. |
-| **Smart Progress Display (percent done, ETA, scrolling)** | **Moderately Novel** | Getting reliable progress and ETA from FFmpeg's output while running multiple background jobs and displaying it cleanly in a TUI that auto-scrolls is a **significant implementation challenge** that would make the tool stand out. |
-| **Companion File Renaming (.srt, etc.)** | **Moderately Novel** | The ability to automatically rename associated sidecar files (subtitles, metadata) when the main video file name changes is a detail often overlooked in simple scripts but is crucial for media libraries. |
+## The Three Main Screens
+The main screens are:
+* **Selection Screen** - where you can customize the decisions and scope of the conversions. The Selecition screen is the first screen after start-up.
+* **Conversion Screen** - where you can view the conversion progress. When conversions are completed (or manually aborted), it returns to the Selection screen.
+* **Help Screen** - where you can see all available keys and meanings. Use the key, '?', to enter and exit the Help screen.
 
-### Conclusion
+### Selection Screen
+After scanning/probing the file and folder arguments, the selection screen will open.  In the example below, we have applied a filter pattern, `anqis.gsk`, to select only certain video files.
 
-**Your project is absolutely an interesting and viable project idea.**
+```
+ [s]etAll [r]setAll [i]nit SP:toggle [g]o ?=help [q]uit /anqis.gsk
+      Picked=3/10  GB=5.6(0)  CPU=736/800%
+ CVT  NET BLOAT    RES  CODEC  MINS     GB   VIDEO
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>[X]  ---  2831^  960p   hevc    50  1.342   Anqis.Gsk.Kbnvw.2020.S01E06.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
+ [X]  ---  2796^  960p   hevc    50  1.321   Anqis.Gsk.Kbnvw.2020.S01E05.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
+ [X]  ---  2769^  960p   hevc    42  1.116   Anqis.Gsk.Kbnvw.2020.S01E04.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
+ [ ]  ---   801   960p   hevc    44  0.333   Anqis.Gsk.Kbnvw.2020.s01e02.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
+ [ ]  ---   762   960p   hevc    48  0.350   Anqis.Gsk.Kbnvw.2020.s01e01.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
+ [ ]  ---   633   960p   hevc    56  0.338   Anqis.Gsk.Kbnvw.2020.s01e09.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
+ [ ]  ---   614   960p   hevc    50  0.289   Anqis.Gsk.Kbnvw.2020.s01e08.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
+ [ ]  ---   608   960p   hevc    43  0.246   Anqis.Gsk.Kbnvw.2020.s01e07.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
+ [ ]  ---   599   960p   hevc    41  0.234   Anqis.Gsk.Kbnvw.2020.s01e03.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
+ [ ]  ---    86   960p   hevc    50  0.041   JSTY.Anqis.Gsk.Kbnvw.2020.s01e06.960p.x265.cmf28.recode.mkv ---> /dsqy/
+```
+**Notes.**
+* `[ ]` denotes a video NOT selected for conversion.
+* `[X]` denotes a video selected for conversion.
+* `^` denotes a value over the threshold for conversion. Besides an excessive bloat, the height could be too large, or the codec unacceptable; all depending on the program options.
+* To change whether selected, you can use:
+    * the s/r/i keys to affect potentially every select, and
+    * SPACE to toggle just one; if one is toggle, the cursor moves to the next line so you can toggle sequences very quickly starting at the top.
+* The videos are always sorted by their current bloat score, highest first.
+* To start converting the selected videos, hit "go" (i.e., the `g` key), and the Conversion Screen replaces this Selection screen.
+### Conversion Screen
+The Conversion screen only shows the videos selected for conversion on the Selection screen. There is little that can be done other than monitor progress and abort the conversions (with 'q' key).
+```
+ ?=help q[uit] /anqis.gsk     ToDo=4/9  GB=11.5(-5.0)  CPU=711/800%
+CVT  NET BLOAT    RES  CODEC  MINS     GB   VIDEO
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ OK -74%   762   960p   hevc    48  0.350   Anqis.Gsk.Kbnvw.2020.s01e01.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsbu
+ OK -79%   599   960p   hevc    41  0.234   Anqis.Gsk.Kbnvw.2020.s01e03.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsbu
+ OK -78%   633   960p   hevc    56  0.338   Anqis.Gsk.Kbnvw.2020.s01e09.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsbu
+ OK -79%   614   960p   hevc    50  0.289   Anqis.Gsk.Kbnvw.2020.s01e08.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsbu
+ OK -72%   801   960p   hevc    44  0.333   Anqis.Gsk.Kbnvw.2020.s01e02.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsbu
+IP   ---  2870^  960p   hevc    43  1.158   Anqis.Gsk.Kbnvw.2020.S01E07.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
+-----> 34.6% | 08:41 | -16:22 | 1.7x | At 14:43/42:32
+[X]  ---  2831^  960p   hevc    50  1.342   Anqis.Gsk.Kbnvw.2020.S01E06.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
+[X]  ---  2796^  960p   hevc    50  1.321   Anqis.Gsk.Kbnvw.2020.S01E05.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
+[X]  ---  2769^  960p   hevc    42  1.116   Anqis.Gsk.Kbnvw.2020.S01E04.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
+```
+**Notes**: You can see:
+* the net change in size, `(-5.0)` GB, and the current size, `11.5` GB.
+* the CPU consumption which is often quite high as in this example.
+* the progress of the singular In Progress conversion including percent complete, time elapsed, time remaining, conversion speed vs viewing speed (1.7x), and the position in the video file.
+* for completed conversions, the reduction in size, the new size, and the new file name of the converted video.
+### Help Screen
+The Help screen is available from the other screens; enter the Help screen with `?` and exit it with another `?`
+```
+Navigation:      H/M/L:      top/middle/end-of-page
+  k, UP:  up one row             0, HOME:  first row
+j, DOWN:  down one row           $, END:  last row
+  Ctrl-u:  half-page up     Ctrl-b, PPAGE:  page up
+  Ctrl-d:  half-page down     Ctrl-f, NPAGE:  page down
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Type keys to alter choice:
+                    ? - help screen:  off ON
+               s - set all to "[X]"
+             r - reset all to "[ ]"
+       i,SP - set all initial state
+     SP - toggle current line state
+              g - begin conversions
+    q - quit converting OR exit app
+           p - pause/release screen:  off ON
+                  / - search string:  brave.new
+                  m - mangle titles:  off ON
+```
+* Some keys are for navigation (they allow vi-like navigation).
+* Some keys are set a state, and the current state is capitalized
+* Some keys are to instigate some action (they have no value)
+* Finally, `/` is to set the filter. The filter must be a valid python regular expression, and it is always case insensitive.
 
-While the core functionality (batch converting with FFmpeg and QSV) is not novel, **the way you intend to package and present it is highly unique, especially for Linux terminal users.**
-
-The combination of:
-
-1.  **Python** (making it easy to install and package).
-2.  **Curses TUI** (for an interactive, terminal-based experience).
-3.  **Smart pre-selection logic** (kbps/resolution/QSV choice).
-4.  **Robust, real-time job management and status display** (for multiple parallel jobs).
-
-...makes for a tool that doesn't seem to have a widely-used, dedicated open-source equivalent on Linux.
-
-**Go for it!** If you build it with the quality-of-life features you've outlined, it would likely be well-received by terminal-focused Linux users and could certainly be a successful PyPI project.
+## TODO (What needs documenting still)
+* File renaming. It renames files when resolution (TBD) or codec changes if the names had that info as well as companion files like .srt files.
+* NOT DONE (tried and failed):
+    * Intel QSV
+    * Thread limits
