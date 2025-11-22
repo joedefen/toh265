@@ -31,6 +31,7 @@ import time
 import fcntl
 import json
 import random
+import curses
 from textwrap import indent
 from typing import Optional, Union, List
 from copy import copy
@@ -758,7 +759,11 @@ class Converter:
         parsed = VideoParser(pathname)
         if parsed.is_movie_year() or parsed.is_tv_episode():
             if parsed.is_tv_episode():
-                name = parsed.episode_key().replace('"', '')
+                name = parsed.title
+                if parsed.year:
+                    name += f' {parsed.year}'
+                name += f' s{parsed.season:02d}e{parsed.episode:02d}'
+                name += f'-{parsed.episode_hi:02d}' if parsed.episode_hi else ''
             else:
                 name = f'{parsed.title} {parsed.year}'
 
@@ -1204,6 +1209,7 @@ class Converter:
         spin.add_key('go', 'g - begin conversions', category='action')
         spin.add_key('quit', 'q - quit converting OR exit app', category='action',
                      keys={ord('q'), 0x3})
+        spin.add_key('freeze', 'p - pause/release screen', vals=[False, True])
         spin.add_key('search', '/ - search string',
                           prompt='Set search string, then Enter')
         spin.add_key('mangle', 'm - mangle titles', vals=[False, True])
@@ -1212,6 +1218,7 @@ class Converter:
 
         self.win = win = ConsoleWindow(keys=spin.keys,
                         body_rows=10+len(self.vids), ctrl_c_terminates=False)
+        curses.intrflush(False)
         self.state = 'select'
 
         win.set_pick_mode(True, 1)
@@ -1219,7 +1226,8 @@ class Converter:
 
         while True:
 
-            render_screen()
+            if not spins.freeze:
+                render_screen()
 
             key = win.prompt(seconds=0.5) # Wait for half a second or a keypress
             if key in spin.keys:
@@ -1355,7 +1363,8 @@ class Converter:
                     self.vids.sort(key=lambda vid: vid.bloat, reverse=True)
                     win.set_pick_mode(True, 1)
 
-            win.clear()
+            if not spins.freeze:
+                win.clear()
 
     def main_loop(self):
         """ TBD """
