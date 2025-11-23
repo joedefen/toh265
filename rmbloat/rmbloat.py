@@ -1245,45 +1245,8 @@ class Converter:
                     win.add_body(line)
             win.render()
 
-        def toggle_doit(vid):
-            if self.dont_doit(vid):
-                vid.doit = '[ ]'
-            else:
-                vid.doit = '[X]' if vid.doit == '[ ]' else '[ ]'
-
-        spin = OptionSpinner()
-        spin.add_key('help_mode', '? - help screen', vals=[False, True])
-        spin.add_key('set_all', 's - set all to "[X]"', category='action')
-        spin.add_key('reset_all', 'r - reset all to "[ ]"', category='action')
-        spin.add_key('init_all', 'i,SP - set all initial state', category='action')
-        spin.add_key('toggle', 'SP - toggle current line state', category='action',
-                     keys={ord(' '), })
-        spin.add_key('go', 'g - begin conversions', category='action')
-        spin.add_key('quit', 'q - quit converting OR exit app', category='action',
-                     keys={ord('q'), 0x3})
-        spin.add_key('freeze', 'p - pause/release screen', vals=[False, True])
-        spin.add_key('search', '/ - search string',
-                          prompt='Set search string, then Enter')
-        spin.add_key('mangle', 'm - mangle titles', vals=[False, True])
-
-        self.spins = spins = spin.default_obj
-
-        self.win = win = ConsoleWindow(keys=spin.keys,
-                        body_rows=10+len(self.vids), ctrl_c_terminates=False)
-        curses.intrflush(False)
-        self.state = 'select'
-
-        win.set_pick_mode(True, 1)
-        not_help_state = self.state
-
-        while True:
-
-            if not spins.freeze:
-                render_screen()
-
-            key = win.prompt(seconds=0.5) # Wait for half a second or a keypress
-            if key in spin.keys:
-                spin.do_key(key, win)
+        def handle_keyboard():
+            nonlocal self, spins, not_help_state
 
             if spins.help_mode:
                 if self.state != 'help':
@@ -1365,7 +1328,9 @@ class Converter:
                     self.state = 'select'
                     self.vids.sort(key=lambda vid: vid.bloat, reverse=True)
                     win.set_pick_mode(True, 1)
-                    continue
+
+        def advance_jobs():
+            nonlocal self
 
             if self.job and self.state in ('convert', 'help'):
                 while True:
@@ -1398,9 +1363,9 @@ class Converter:
                         lg.put('OK' if got == 0 else 'ERR',
                             title + ' ', json.dumps(dumped, indent=4))
                         self.job = None
-                        break
+                        break # finished job
                     else:
-                        break
+                        break # no progress on job
             if self.state == 'convert' and not self.job:
                 for vid in self.visible_vids:
                     if not vid:
@@ -1414,6 +1379,50 @@ class Converter:
                     self.state = 'select'
                     self.vids.sort(key=lambda vid: vid.bloat, reverse=True)
                     win.set_pick_mode(True, 1)
+
+        def toggle_doit(vid):
+            if self.dont_doit(vid):
+                vid.doit = '[ ]'
+            else:
+                vid.doit = '[X]' if vid.doit == '[ ]' else '[ ]'
+
+        spin = OptionSpinner()
+        spin.add_key('help_mode', '? - help screen', vals=[False, True])
+        spin.add_key('set_all', 's - set all to "[X]"', category='action')
+        spin.add_key('reset_all', 'r - reset all to "[ ]"', category='action')
+        spin.add_key('init_all', 'i,SP - set all initial state', category='action')
+        spin.add_key('toggle', 'SP - toggle current line state', category='action',
+                     keys={ord(' '), })
+        spin.add_key('go', 'g - begin conversions', category='action')
+        spin.add_key('quit', 'q - quit converting OR exit app', category='action',
+                     keys={ord('q'), 0x3})
+        spin.add_key('freeze', 'p - pause/release screen', vals=[False, True])
+        spin.add_key('search', '/ - search string',
+                          prompt='Set search string, then Enter')
+        spin.add_key('mangle', 'm - mangle titles', vals=[False, True])
+
+        self.spins = spins = spin.default_obj
+
+        self.win = win = ConsoleWindow(keys=spin.keys,
+                        body_rows=10+len(self.vids), ctrl_c_terminates=False)
+        curses.intrflush(False)
+        self.state = 'select'
+
+        win.set_pick_mode(True, 1)
+        not_help_state = self.state
+
+        while True:
+
+            if not spins.freeze:
+                render_screen()
+
+            key = win.prompt(seconds=0.5) # Wait for half a second or a keypress
+            if key in spin.keys:
+                spin.do_key(key, win)
+
+            handle_keyboard()
+        
+            advance_jobs()
 
             if not spins.freeze:
                 win.clear()
