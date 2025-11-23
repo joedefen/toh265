@@ -13,8 +13,12 @@ TODO:
    (already space optimized ... a better designation?), and again those act as if unchecked and
    can be manually checked (for re-encoding ... presumably because the CMF option was changed
    or something that might allow the encoding to succeed.)
+- V2.0
+  - fully automated daemon (still running as curses app)
+  - runs during certain hours ... restarts itself to freshly read
+    disk
 """
-# pylint: disable=too-many-locals,line-too-long,broad-exception-caught
+# pylint: disable=too-many-locals,line-too-long,broad-exceptioncaught
 # pylint: disable=no-else-return,too-many-branches
 # pylint: disable=too-many-return-statements,too-many-instance-attributes
 # pylint: disable=consider-using-with,line-too-long,too-many-lines
@@ -946,6 +950,7 @@ class Converter:
                 net = (vid.gb - probe.gb) / vid.gb
                 net = int(round(-net*100))
             if self.is_allowed_codec(probe) and net > -self.opts.min_shrink_pct:
+                self.probe_cache.set_anomaly(vid.filepath, 'OPT')
                 success = False
             vid.net = f'{net}%'
 
@@ -993,9 +998,11 @@ class Converter:
             if os.path.exists(job.temp_file):
                 os.remove(job.temp_file)
                 print(f"FFmpeg failed. Deleted incomplete {job.temp_file}.")
+                self.probe_cache.set_anomaly(vid.filepath, 'Err')
 
     def create_video_file_list(self):
         """ TBD """
+        read_pipe = False
         video_files_out = []
         enqueued_paths = set()
 
@@ -1005,13 +1012,38 @@ class Converter:
         for file_arg in self.opts.files:
             if file_arg == "-":
                 # Handle STDIN
-                paths_from_args.extend(sys.stdin.read().splitlines())
+                if not read_pipe:
+                    paths_from_args.extend(sys.stdin.read().splitlines())
+                    read_pipe = True
             else:
                 # Convert to absolute path immediately
                 abs_path = os.path.abspath(file_arg)
                 if abs_path not in enqueued_paths:
                     paths_from_args.append(abs_path)
                     enqueued_paths.add(abs_path)
+
+        # --- 2. Restore TTY Input if needed ---
+        if read_pipe:
+            try:
+                # 2a. Close the current stdin (the pipe)
+                sys.stdin.close()
+                # 2b. Open the TTY device (the actual keyboard/terminal)
+                # os.O_RDONLY is read-only access.
+                tty_fd = os.open('/dev/tty', os.O_RDONLY)
+                # 2c. Replace file descriptor 0 (stdin) with the TTY descriptor
+                # os.dup2(old_fd, new_fd) copies the old_fd to the new_fd (FD 0).
+                os.dup2(tty_fd, 0)
+                # 2d. Re-create the sys.stdin file object for Python's I/O
+                # os.fdopen(0, 'r') creates a new Python file object from FD 0.
+                sys.stdin = os.fdopen(0, 'r')
+                # 2e. Close the original file descriptor variable (tty_fd)
+                os.close(tty_fd)
+                
+            except OSError as e:
+                # This handles cases where /dev/tty is not available (e.g., some non-interactive environments)
+                sys.stderr.write(f"Error reopening TTY: {e}. Cannot enter interactive mode.\n")
+                sys.exit(1)
+            
 
         # 2. Separate into directories and individual files, and sort for processing order
         directories = []
