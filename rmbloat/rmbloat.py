@@ -727,14 +727,20 @@ class Converter:
             percent_complete = (frame_number / total_frames) * 100
             remaining_time_formatted = job.trim0(str(timedelta(seconds=int(remaining_seconds))))
             elapsed_time_formatted = job.trim0(str(timedelta(seconds=elapsed_time_sec)))
+            if job.duration_secs > 0:
+                at_seconds = (frame_number / total_frames) * job.duration_secs
+                at_seconds_formatted = job.trim0( str(timedelta(seconds=int(at_seconds))))
+                at_formatted = f'At ~{at_seconds_formatted}/{job.total_duration_formatted}'
+            else:
+                at_formatted = f"Frame {frame_number}/{total_frames}"
 
             # Use the estimated FPS for the speed report
             progress_line = (
                 f"{percent_complete:.1f}% | "
                 f"{elapsed_time_formatted} | "
                 f"-{remaining_time_formatted} | "
-                f"{speed} | " # Report FPS clearly as Estimated
-                f"Frame {frame_number}/{total_frames}"
+                f"~{speed} | " # Report FPS clearly as Estimated
+                + at_formatted
             )
             return progress_line
 
@@ -1357,7 +1363,7 @@ class Converter:
                 win.add_header(f'CVT {"NET":>4} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO')
                 if self.state == 'convert':
                     win.pick_pos = stats.progress_idx
-                    win.scroll_pos = stats.progress_idx - win.scroll_view_size
+                    win.scroll_pos = stats.progress_idx - win.scroll_view_size + 2
                 for line in lines:
                     win.add_body(line)
             win.render()
