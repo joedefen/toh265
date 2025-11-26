@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-#!/usr/bin/env python3
 import time
 import collections
 from typing import Tuple, Deque, List
@@ -78,9 +77,10 @@ class CpuStatus:
         self._add_current_reading()
         now = time.monotonic()
 
-        # 2. Prune the history: Keep only points within the window
-        while len(self._history) > 1 and \
-              (now - self._history[0][2]) > self.window_duration:
+        # 2. Prune the history: Discard points if there is a younger
+        #  point as old as the window_duration
+        while (len(self._history) > 2 and
+              (now - self._history[1][2]) >= self.window_duration):
             self._history.popleft()
 
         # 3. Check if we have enough data for a meaningful delta

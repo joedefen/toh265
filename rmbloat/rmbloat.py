@@ -212,14 +212,13 @@ class FfmpegMon:
         Reads and processes data. Returns the next item from the internal queue
         (string output) or the final return code (integer).
         """
-        # --- Stage 0: Process Queue First ---
+        # --- Stage 0: Process Queue First & Status Check (remains unchanged) ---
         if self.output_queue:
             return self.output_queue.pop(0)
 
         if not self.process:
             return self.return_code
 
-        # Check for termination status, but don't act on it yet.
         process_status = self.process.poll()
 
         # 1. Read available data non-blockingly
@@ -231,34 +230,33 @@ class FfmpegMon:
         # 2. Process NEW DATA
         if chunk:
             # Append the new chunk to the existing buffer
+            # We must use bytes for the buffer: self.partial_line + chunk
             data = self.partial_line + chunk
 
-            # Split by the byte newline character
-            lines = data.split(b'\n')
+            # --- CRITICAL FIX: Split by EITHER \n OR \r ---
+            # We need to split by both, keeping the delimiters for context is not needed,
+            # but handling trailing fragments is important.
+            
+            # 2a. Split data by \n or \r. Note: re.split discards delimiters.
+            # Use 'b' prefix for regex pattern since data is bytes
+            fragments = re.split(b'[\r\n]', data)
 
-            # The last element is the new partial line; the rest are complete lines
-            self.partial_line = lines[-1]
+            # 2b. The last element is the new partial line (may be an empty fragment)
+            self.partial_line = fragments[-1]
 
-            # Put all complete lines onto the output queue
-            for line_bytes in lines[:-1]:
-                line_str = line_bytes.decode('utf-8', errors='ignore').lstrip('\r')
-                self.output_queue.append(line_str)
+            # 2c. The rest are complete lines/progress updates
+            # We ignore empty strings/fragments that occur from successive delimiters (like \r\n or \n\n).
+            for line_bytes in fragments[:-1]:
+                if line_bytes: # Ignore empty fragments
+                    line_str = line_bytes.decode('utf-8', errors='ignore')
+                    self.output_queue.append(line_str)
 
-            # --- PROGRESS LINE LOGIC (if no newline was found) ---
-            # If we received new data but didn't find any newlines, it's likely a progress update.
-            # We treat the accumulated partial_line as the progress line.
-            if not self.output_queue and self.partial_line:
-                # Return the progress line and clear the partial_line buffer.
-                output_to_caller = self.partial_line.decode('utf-8', errors='ignore').lstrip('\r')
-                self.partial_line = b"" # Assume the caller consumes this progress line
-                return output_to_caller
-
-        # --- Stage 3: Handle Termination (Last resort) ---
+        # --- Stage 3 & 4: Handle Termination and Final Check (remains largely unchanged) ---
         if process_status is not None:
             # The process is done. Process any remaining data in partial_line.
             if self.partial_line:
-                # The remaining partial line is the final output/error.
-                final_output = self.partial_line.decode('utf-8', errors='ignore').lstrip('\r')
+                # Decode and add the final output/error line.
+                final_output = self.partial_line.decode('utf-8', errors='ignore')
                 self.partial_line = b"" # Buffer consumed
                 self.output_queue.append(final_output) # Add the final line to the queue
 
@@ -273,12 +271,10 @@ class FfmpegMon:
             return self.return_code
 
         # --- Stage 4: Final Check ---
-        # If running and the queue is still empty after the read attempt:
         if self.output_queue:
             return self.output_queue.pop(0)
 
         return None
-
 
     def _read_remaining(self):
         """
@@ -361,31 +357,21 @@ class Converter:
 
 #       # Regex to find FFmpeg progress lines (from stderr)
 #       # Looks for 'frame=  XXXXX' and 'time=00:00:00.00' and 'speed=XX.XXx'
-#   PROGRESS_RE = re.compile(
-#       r"frame=\s*(\d+)\b.*?"
-#       r"time=(?:(\d{2}):(\d{2}):(\d{2})\.(\d{2})|\S*?)\b.*"
-#       r"speed=\s*(?:(\d+\.\d+)x|\S*?)\b"
-#   )
-#   PROGRESS_RE = re.compile(
-#       r"frame=\s*(?P<frame>\d+)"  # 1. Capture the frame number (required)
-#       r".*?"                      # Non-greedy match for anything between
-#       r"time=(?P<time>\d{2}:\d{2}:\d{2}\.\d{2}|N\/A)\s+" # 2. Capture time OR N/A
-#       r".*?"                      # Non-greedy match for anything between
-#       r"speed=(?P<speed>\d+\.\d+x|N\/A)"  # 3. Capture speed OR N/A
-#   )
+#       "frame= 2091 fps= 26 q=35.9 size=   11264KiB time=00:01:27.12 bitrate=1059.1kbits/s speed= 1.1x    \r",
     PROGRESS_RE = re.compile(
-        # 1. Capture the Frame Number (Group 1)
-        r"\s*frame=\s*(\d+)\s+"
-        # 2. Match everything until 'time='
-        r".*?"
-        # 3. Handle Time: Capture the time fields (Groups 2, 3, 4, 5) OR match 'N/A'
-        # By using (?:...|N/A), if N/A is matched, Groups 2-5 will be None.
-        r"time=(?:(\d{2}):(\d{2}):(\d{2})\.(\d{2})|N\/A)\s+"
-        # 4. Match everything until 'speed='
-        r".*?"
-        # 5. Handle Speed: Capture the speed field (Group 6) OR match 'N/A'
-        # If N/A is matched, Group 6 will be None.
-        r"speed=(?:(\d+\.\d+)x|N\/A)"
+        # 1. Mandatory Frame Number (Group 1)
+        # The \s* at the beginning accounts for possible leading whitespace
+        r"\s*frame[=\s]+(\d+)\s+"
+        
+        # 2. Time Section (Optional, Strict Numerical Capture)
+        # Looks for 'time=', then attempts to capture the precise HH:MM:SS.cs format (G2-G5).
+        r"(?:.*?time[=\s]+(\d{2}):(\d{2}):(\d{2})\.(\d{2}))?"
+        
+        # 3. Speed Section (Optional, Strict Numerical Capture)
+        # Looks for 'speed=', then captures the float (G6).
+        r"(?:.*?speed[=\s]+(\d+\.\d+)x)?",
+        
+        re.IGNORECASE
     )
 
     # A common list of video extensions ffmpeg can typically handle.
@@ -405,6 +391,7 @@ class Converter:
         assert Converter.singleton is None
         Converter.singleton = self
         self.win = None
+        self.redraw_mono = time.monotonic()
         self.opts = opts
         self.spins = None # spinner values
         self.search_re = None # the "accepted" search
@@ -630,7 +617,9 @@ class Converter:
 
         # Reconstruct the three color values from the compact string
         color_opts = self.make_color_opts(vid.probe0.color_spt)
+
         pix_fmt_opts = ['-pix_fmt', 'yuv420p10le']
+        map_opts = '-map 0:v:0 -map 0:a? -map 0:s? -map -0:t -map -0:d'.split()
 
         ffmpeg_cmd = [
             * quota_opts,
@@ -643,19 +632,19 @@ class Converter:
             * scale_opts,
 
             # Video Encoding Options
-            '-c:v', 'libx265',
             '-crf', str(self.opts.quality),
             '-preset', 'medium',
 
             * pix_fmt_opts,
             * color_opts,
-
             * thread_opts,
+            * map_opts,
 
             # Stream Copy/Mapping
+            '-c:v', 'libx265',
             '-c:a', 'copy',
             '-c:s', 'copy',
-            '-map', '0',
+            # '-map', '0',
 
             job.temp_file
         ]
@@ -1346,19 +1335,25 @@ class Converter:
                         shown = Mangler.mangle(self.search_re) if spins.mangle else self.search_re
                         head += f' /{shown}'
                     win.add_header(head)
+                    cpu_status = self.cpu.get_status_string()
                     win.add_header(f'     Picked={stats.picked}/{stats.total}'
                                    f'  GB={stats.gb}({stats.delta_gb})'
-                                   f'  {self.cpu.get_status_string()}'
+                                   f'  {cpu_status}'
                                    )
+                    # lg.lg(f'{cpu_status=}')
                 if self.state == 'convert':
                     head = ' ?=help q[uit]'
                     if self.search_re:
                         shown = Mangler.mangle(self.search_re) if spins.mangle else self.search_re
                         head += f' /{shown}'
+                    cpu_status = self.cpu.get_status_string()
                     head += (f'     ToDo={stats.total-stats.done}/{stats.total}'
                                 f'  GB={stats.gb}({stats.delta_gb})'
-                                f'  {self.cpu.get_status_string()}')
+                                f'  {self.cpu.get_status_string()}'
+                                f'  {cpu_status}'
+                                )
                     win.add_header(head)
+                    # lg.lg(f'{cpu_status=}')
 
                 win.add_header(f'CVT {"NET":>4} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO')
                 if self.state == 'convert':
@@ -1366,7 +1361,9 @@ class Converter:
                     win.scroll_pos = stats.progress_idx - win.scroll_view_size + 2
                 for line in lines:
                     win.add_body(line)
-            win.render()
+            redraw = bool(time.monotonic() - self.redraw_mono >= 60)
+            self.redraw_mono = time.monotonic() if redraw else self.redraw_mono
+            win.render(redraw=redraw)
 
         def handle_keyboard():
             nonlocal self, spins, not_help_state
@@ -1552,7 +1549,7 @@ class Converter:
             if not spins.freeze:
                 render_screen()
 
-            key = win.prompt(seconds=0.5) # Wait for half a second or a keypress
+            key = win.prompt(seconds=3.0) # Wait for half a second or a keypress
             if key in spin.keys:
                 spin.do_key(key, win)
 
