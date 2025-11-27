@@ -417,7 +417,7 @@ class Converter:
         self.job = None
         self.prev_time_encoded_secs = -1
         self.probe_cache = ProbeCache(cache_dir_name=cache_dir)
-        self.chooser = FfmpegChooser(force_pull=False, prefer_strategy='auto', quiet=False)
+        self.chooser = FfmpegChooser(force_pull=False, prefer_strategy=opts.prefer_strategy, quiet=False)
         self.probe_cache.load()
         self.probe_cache.store()
         self.progress_line_mono = 0
@@ -1681,6 +1681,11 @@ def main(args=None):
                     help='save the -B/-b/-q/-a/-F/-m/-M options as defaults')
         parser.add_argument('-n', '--dry-run', action='store_true',
                     help='Perform a trial run with no changes made.')
+        parser.add_argument('-p', '--prefer-strategy',
+                    default='auto',
+                    choices=FfmpegChooser.STRATEGIES,
+                    help='FFmpeg strategy preference: auto (default), system_accel, '
+                         'docker_accel, system_cpu, or docker_cpu')
         parser.add_argument('-s', '--sample', action='store_true',
                     help='produce 30s samples called SAMPLE.{input-file}')
         parser.add_argument('-L', '--logs', action='store_true',

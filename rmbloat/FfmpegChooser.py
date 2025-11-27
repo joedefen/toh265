@@ -12,15 +12,18 @@ from pathlib import Path
 class FfmpegChooser:
     """
     Detects and configures the best available FFmpeg runtime.
-    
+
     Priority order:
     1. System ffmpeg with working hardware acceleration
     2. Docker/Podman with hardware acceleration
-    3. Docker/Podman without hardware acceleration (CPU fallback)
-    4. System ffmpeg without hardware acceleration
+    3. System ffmpeg without hardware acceleration (CPU fallback)
+    4. Docker/Podman without hardware acceleration
     """
-    
-    def __init__(self, force_pull=False, image="joedefen/ffmpeg-vaapi-docker:latest", 
+
+    # Strategy options in order of preference (after 'auto')
+    STRATEGIES = ['auto', 'system_accel', 'docker_accel', 'system_cpu', 'docker_cpu']
+
+    def __init__(self, force_pull=False, image="joedefen/ffmpeg-vaapi-docker:latest",
                  prefer_strategy='auto', quiet=False):
         """
         Initialize and detect the best FFmpeg configuration.
