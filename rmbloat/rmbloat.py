@@ -416,8 +416,8 @@ class Converter:
         self.state = 'probe' # 'select', 'convert'
         self.job = None
         self.prev_time_encoded_secs = -1
-        self.probe_cache = ProbeCache(cache_dir_name=cache_dir)
         self.chooser = FfmpegChooser(force_pull=False, prefer_strategy=opts.prefer_strategy, quiet=False)
+        self.probe_cache = ProbeCache(cache_dir_name=cache_dir, chooser=self.chooser)
         self.probe_cache.load()
         self.probe_cache.store()
         self.progress_line_mono = 0

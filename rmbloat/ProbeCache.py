@@ -18,11 +18,12 @@ class ProbeCache:
     disk_fields = set('anomaly width height codec bitrate fps duration size_bytes color_spt'.split())
 
     """ TBD """
-    def __init__(self, cache_file_name="video_probes.json", cache_dir_name="/tmp"):
+    def __init__(self, cache_file_name="video_probes.json", cache_dir_name="/tmp", chooser=None):
         self.cache_path = os.path.join(cache_dir_name, cache_file_name)
         self.cache_data: Dict[str, Any] = {}
         self._dirty_count = 0
         self._cache_lock = Lock() # NEW: import Lock from threading
+        self.chooser = chooser  # FfmpegChooser instance for building ffprobe commands
         self.load()
 
     # --- Utility Methods ---
@@ -69,10 +70,20 @@ class ProbeCache:
             print(f"Error: File not found at '{file_path}'")
             return None
 
-        command = [
-            'ffprobe', '-v', 'error', '-print_format', 'json',
-            '-show_format', '-show_streams', file_path
-        ]
+        # Build ffprobe command using chooser if available, otherwise fall back to system ffprobe
+        if self.chooser:
+            command = self.chooser.make_ffprobe_cmd(
+                file_path,
+                '-v', 'error',
+                '-print_format', 'json',
+                '-show_format',
+                '-show_streams'
+            )
+        else:
+            command = [
+                'ffprobe', '-v', 'error', '-print_format', 'json',
+                '-show_format', '-show_streams', file_path
+            ]
 
         try:
             # Added timeout and improved error handling for subprocess
@@ -98,7 +109,7 @@ class ProbeCache:
 
             meta.width = int(video_stream.get('width', 0))
             meta.height = int(video_stream.get('height', 0))
-            meta.codec = video_stream.get('codec_name', 'unk_codec')
+            meta.codec = video_stream.get('codec_name', '---')
 
             meta.color_spt = get_color_spt()
 
@@ -132,19 +143,58 @@ class ProbeCache:
 
         except subprocess.CalledProcessError as e:
             # print(f"Error executing ffprobe: {e.stderr}")
+            # Increment probe failure counter
+            self._increment_probe_failure(file_path)
             return None
         except json.JSONDecodeError:
             print(f"Error: Failed to decode ffprobe JSON output for '{file_path}'.")
+            self._increment_probe_failure(file_path)
             return None
         except FileNotFoundError:
             print("Error: The 'ffprobe' command was not found. Is FFmpeg installed and in your PATH?")
+            self._increment_probe_failure(file_path)
             return None
         except IOError as e:
             print(f"File size error: {e}")
+            self._increment_probe_failure(file_path)
             return None
 
 
     # --- Cache Management Methods ---
+
+    def _increment_probe_failure(self, filepath: str):
+        """Increment the probe failure counter (?P1 -> ?P2 -> ... -> ?P9)"""
+        # Check if we have a cached entry with existing probe failure
+        cached_data = self.cache_data.get(filepath, {})
+        current_anomaly = cached_data.get('anomaly', None)
+
+        # Determine the new probe failure number
+        if current_anomaly and current_anomaly.startswith('?P'):
+            # Extract current number and increment
+            try:
+                num = int(current_anomaly[2])  # Get digit after '?P'
+                new_num = min(num + 1, 9)  # Cap at 9
+            except (ValueError, IndexError):
+                new_num = 1
+        else:
+            new_num = 1
+
+        new_anomaly = f'?P{new_num}'
+
+        # Create a minimal probe object with placeholders
+        meta = SimpleNamespace()
+        meta.anomaly = new_anomaly
+        meta.width = 0
+        meta.height = 0
+        meta.codec = '---'
+        meta.bitrate = 0
+        meta.fps = 0
+        meta.duration = 0
+        meta.size_bytes = 0
+        meta.color_spt = 'unknown,~,~'
+
+        # Store in cache
+        self._set_cache(filepath, meta)
 
     @staticmethod
     def _compute_fields(meta):
@@ -239,6 +289,17 @@ class ProbeCache:
                 del self.cache_data[filepath]
                 self._dirty_count += 1
                 return None
+
+            # Check if this is a retryable probe failure (?P1 through ?P8)
+            cached_anomaly = self.cache_data[filepath].get('anomaly', None)
+            if cached_anomaly and cached_anomaly.startswith('?P'):
+                try:
+                    num = int(cached_anomaly[2])
+                    if num < 9:
+                        # Retry the probe
+                        return None
+                except (ValueError, IndexError):
+                    pass
 
             # Cache is VALID. Return the stored data converted to SimpleNamespace.
             return self._load_probe_data(filepath)
