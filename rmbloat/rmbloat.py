@@ -49,6 +49,7 @@ from .VideoParser import VideoParser, Mangler
 from .IniManager import IniManager
 from .RotatingLogger import RotatingLogger
 from .CpuStatus import CpuStatus
+from .FfmpegChooser import FfmpegChooser
 # from .SetupCgroup import set_cgroup_cpu_limit
 
 lg = RotatingLogger('rmbloat')
@@ -405,6 +406,7 @@ class Converter:
         self.job = None
         self.prev_time_encoded_secs = -1
         self.probe_cache = ProbeCache(cache_dir_name=cache_dir)
+        self.chooser = FfmpegChooser(force_pull=False, prefer_strategy='auto', quiet=False)
         self.probe_cache.load()
         self.probe_cache.store()
         self.progress_line_mono = 0
@@ -573,6 +575,76 @@ class Converter:
         return color_opts
 
     def start_transcode_job(self, vid):
+        """Start a transcoding job using FfmpegChooser."""
+        os.chdir(os.path.dirname(vid.filepath))
+        basename = os.path.basename(vid.filepath)
+        probe = vid.probe0
+        
+        # Determine output file paths
+        prefix = f'/heap/samples/SAMPLE.{self.opts.quality}' if self.opts.sample else 'TEMP'
+        temp_file = f"{prefix}.{vid.standard_name}"
+        orig_backup_file = f"ORIG.{basename}"
+        
+        if os.path.exists(temp_file):
+            os.unlink(temp_file)
+        
+        # Calculate duration
+        duration_secs = probe.duration
+        if self.opts.sample:
+            duration_secs = self.sample_seconds
+        
+        job = Job(vid, orig_backup_file, temp_file, duration_secs)
+        job.input_file = basename
+        
+        # Create namespace with defaults
+        params = self.chooser.make_namespace(
+            input_file=job.input_file,
+            output_file=job.temp_file
+        )
+        
+        # Set quality
+        params.crf = self.opts.quality
+        
+        # Set priority
+        params.use_nice_ionice = not self.opts.full_speed
+        
+        # Set thread count
+        params.thread_count = self.opts.thread_cnt
+        
+        # Sampling options
+        if self.opts.sample:
+            params.sample_mode = True
+            start_secs = max(120, job.duration_secs) * 0.20
+            params.pre_input_opts = ['-ss', job.duration_spec(start_secs)]
+            params.post_input_opts = ['-t', str(self.sample_seconds)]
+        
+        # Scaling options
+        MAX_HEIGHT = 1080
+        if probe.height > MAX_HEIGHT:
+            width = MAX_HEIGHT * probe.width // probe.height
+            params.scale_opts = ['-vf', f'scale={width}:-2']
+        
+        # Color options
+        params.color_opts = self.make_color_opts(vid.probe0.color_spt)
+        
+        # Stream mapping options
+        map_copy = '-map 0:v:0 -map 0:a? -c:a copy -map'
+        map_copy += ' 0:s? -c:s copy -map -0:t -map -0:d'
+        params.map_opts = map_copy.split()
+        
+        # Generate the command
+        ffmpeg_cmd = self.chooser.make_ffmpeg_cmd(params)
+        
+        # Store command for logging
+        vid.command = self.bash_quote(ffmpeg_cmd)
+        
+        # Start the job
+        if not self.opts.dry_run:
+            job.ffsubproc.start(ffmpeg_cmd)
+            self.progress_line_mono = time.monotonic()
+        
+        return job
+    def old_start_transcode_job(self, vid):
         """ TBD """
         os.chdir(os.path.dirname(vid.filepath))
         basename = os.path.basename(vid.filepath)
@@ -619,7 +691,9 @@ class Converter:
         color_opts = self.make_color_opts(vid.probe0.color_spt)
 
         pix_fmt_opts = ['-pix_fmt', 'yuv420p10le']
-        map_opts = '-map 0:v:0 -map 0:a? -map 0:s? -map -0:t -map -0:d'.split()
+        map_copy = '-map 0:v:0 -map 0:a? -c:a copy -map'
+        map_copy += ' 0:s? -c:s copy -map -0:t -map -0:d'
+        map_opts = map_copy.split()
 
         ffmpeg_cmd = [
             * quota_opts,
