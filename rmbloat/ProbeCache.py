@@ -6,6 +6,8 @@ import sys
 import subprocess
 import math
 import re
+import fcntl
+import atexit
 from types import SimpleNamespace
 from typing import Optional, Dict, Any, Union, List
 from threading import Lock
@@ -20,13 +22,41 @@ class ProbeCache:
     """ TBD """
     def __init__(self, cache_file_name="video_probes.json", cache_dir_name="/tmp", chooser=None):
         self.cache_path = os.path.join(cache_dir_name, cache_file_name)
+        self.lock_path = self.cache_path + ".lock"
         self.cache_data: Dict[str, Any] = {}
         self._dirty_count = 0
         self._cache_lock = Lock() # NEW: import Lock from threading
         self.chooser = chooser  # FfmpegChooser instance for building ffprobe commands
+        self._lock_file = None
+
+        # Acquire single-instance lock
+        self._acquire_instance_lock()
+
         self.load()
 
     # --- Utility Methods ---
+
+    def _acquire_instance_lock(self):
+        """Acquire exclusive lock - only one rmbloat instance can run"""
+        try:
+            self._lock_file = open(self.lock_path, 'w')
+            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Register cleanup on exit
+            atexit.register(self._release_instance_lock)
+        except IOError:
+            print(f"ERROR: Another rmbloat instance is already running (lock: {self.lock_path})")
+            sys.exit(1)
+
+    def _release_instance_lock(self):
+        """Release the instance lock"""
+        if self._lock_file:
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+                self._lock_file.close()
+                if os.path.exists(self.lock_path):
+                    os.remove(self.lock_path)
+            except Exception:
+                pass
 
     @staticmethod
     def _get_file_size_info(filepath: str) -> Optional[Dict[str, Union[int, float]]]:
@@ -143,27 +173,27 @@ class ProbeCache:
 
         except subprocess.CalledProcessError as e:
             # print(f"Error executing ffprobe: {e.stderr}")
-            # Increment probe failure counter
-            self._increment_probe_failure(file_path)
-            return None
+            # Increment probe failure counter and return placeholder
+            return self._increment_probe_failure(file_path)
         except json.JSONDecodeError:
             print(f"Error: Failed to decode ffprobe JSON output for '{file_path}'.")
-            self._increment_probe_failure(file_path)
-            return None
+            return self._increment_probe_failure(file_path)
         except FileNotFoundError:
             print("Error: The 'ffprobe' command was not found. Is FFmpeg installed and in your PATH?")
-            self._increment_probe_failure(file_path)
-            return None
+            return self._increment_probe_failure(file_path)
         except IOError as e:
             print(f"File size error: {e}")
-            self._increment_probe_failure(file_path)
-            return None
+            return self._increment_probe_failure(file_path)
 
 
     # --- Cache Management Methods ---
 
-    def _increment_probe_failure(self, filepath: str):
-        """Increment the probe failure counter (?P1 -> ?P2 -> ... -> ?P9)"""
+    def _increment_probe_failure(self, filepath: str) -> SimpleNamespace:
+        """Increment the probe failure counter (?P1 -> ?P2 -> ... -> ?P9)
+
+        Returns:
+            SimpleNamespace with placeholder values and incremented ?Pn anomaly
+        """
         # Check if we have a cached entry with existing probe failure
         cached_data = self.cache_data.get(filepath, {})
         current_anomaly = cached_data.get('anomaly', None)
@@ -181,6 +211,10 @@ class ProbeCache:
 
         new_anomaly = f'?P{new_num}'
 
+        # Get actual file size for cache validation
+        size_info = self._get_file_size_info(filepath)
+        actual_size = size_info['size_bytes'] if size_info else 0
+
         # Create a minimal probe object with placeholders
         meta = SimpleNamespace()
         meta.anomaly = new_anomaly
@@ -190,11 +224,13 @@ class ProbeCache:
         meta.bitrate = 0
         meta.fps = 0
         meta.duration = 0
-        meta.size_bytes = 0
+        meta.size_bytes = actual_size  # Use actual file size for cache validation
         meta.color_spt = 'unknown,~,~'
 
-        # Store in cache
+        # Store in cache (will be saved by caller in batch mode, or by store() call)
         self._set_cache(filepath, meta)
+
+        return meta
 
     @staticmethod
     def _compute_fields(meta):
@@ -354,67 +390,6 @@ class ProbeCache:
                 # this does not happen often ... make sure it is saved NOW
                 self.store()
         return meta
-
-    def old_batch_get_or_probe(self, filepaths: List[str], max_workers: int = 8) -> Dict[str, Optional[SimpleNamespace]]:
-        """
-        Batch process a list of file paths. Checks cache first, then runs ffprobe
-        concurrently for all cache misses.
-        """
-        results: Dict[str, Optional[SimpleNamespace]] = {}
-        probe_needed_paths: List[str] = []
-        total_files, probe_cnt = len(filepaths), 0
-
-        # 1. First Pass: Check Cache for all files
-        for filepath in filepaths:
-            meta = self._get_valid_entry(filepath)
-            if meta:
-                results[filepath] = meta
-            else:
-                probe_needed_paths.append(filepath)
-
-        # 2. Second Pass: Concurrent Probing for cache misses
-        if not probe_needed_paths:
-            return results
-
-        print(f"Starting concurrent ffprobe for {len(probe_needed_paths)} files using {max_workers} threads...")
-
-        def probe_wrapper(filepath: str) -> Optional[SimpleNamespace]:
-            return self._get_metadata_with_ffprobe(filepath)
-
-        # Use ThreadPoolExecutor to run probes concurrently
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Map the probe_needed_paths to the probe_and_store function
-            future_to_path = {executor.submit(probe_wrapper, path): path for path in probe_needed_paths}
-
-            for future in future_to_path:
-                filepath = future_to_path[future]
-                try:
-                    meta = future.result()
-                    with self._cache_lock:
-                        probe_cnt += 1
-                        self._set_cache(filepath, meta)
-                        self._compute_fields(meta)
-                        results[filepath] = meta
-                        if self._dirty_count >= 100:
-                            self.store()
-                            # \r (carriage return) moves the cursor to the start of the line for overwrite
-                            percent = round(100 * probe_cnt / total_files, 1)
-                            sys.stderr.write(f"probing: {percent}% {probe_cnt} of {total_files}\r")
-                            sys.stderr.flush()
-
-                except Exception:
-                    probe_cnt += 1
-                    # results[filepath] = None
-
-        # 3. Final Step: Save all new probes to disk once (thread-safe store)
-        with self._cache_lock:
-            self.store()
-        # Print a final newline character to clean the console after completion
-        if total_files > 0:
-            sys.stderr.write("\n")
-            sys.stderr.flush()
-
-        return results
         
     def batch_get_or_probe(self, filepaths: List[str], max_workers: int = 8) -> Dict[str, Optional[SimpleNamespace]]:
         """
