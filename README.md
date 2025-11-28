@@ -14,6 +14,109 @@ Since it is designed for mass conversions on a media server, it often makes sens
 ### Easy Installation
 To install `rmbloat`, use `pipx rmbloat`. If explanation is needed, see [Install and Execute Python Applications Using pipx](https://realpython.com/python-pipx/).
 
+## System Preparation
+
+`rmbloat` requires FFmpeg with HEVC (H.265) encoding support. For best performance, hardware acceleration via VA-API is strongly recommended. You have three options:
+
+### Option 1: Local FFmpeg with Hardware Acceleration (Recommended)
+
+This provides the best performance with lowest overhead.
+
+**Install FFmpeg on Ubuntu:**
+
+`rmbloat` is tested with FFmpeg v7 (recommended at time of authoring). FFmpeg v6 should also work, but v7 has better HEVC encoding performance and dependability.
+
+```bash
+sudo apt update
+sudo apt install ffmpeg
+
+# Check your FFmpeg version
+ffmpeg -version
+```
+
+**If you have FFmpeg v6 and want to upgrade to v7:**
+```bash
+# Remove existing FFmpeg
+sudo apt remove ffmpeg
+
+# Add FFmpeg v7 PPA and install
+sudo add-apt-repository ppa:ubuntuhandbook1/ffmpeg7
+sudo apt update
+sudo apt install ffmpeg
+
+# Verify version
+ffmpeg -version
+```
+
+**Enable VA-API Hardware Acceleration:**
+```bash
+# Install VA-API drivers and Intel media driver
+sudo apt install libva-dev intel-media-va-driver-non-free
+
+# Add your user to video and render groups
+sudo usermod -aG video $USER
+sudo usermod -aG render $USER
+
+# Log out and back in for group changes to take effect
+# Or run: newgrp video && newgrp render
+
+# Verify hardware acceleration is working
+vainfo
+# Should show: "vaQueryConfigEntrypoints: VAEntrypointEncSlice" for H265/HEVC
+
+# Test with rmbloat
+rmbloat --chooser-tests
+```
+
+**Note**: For non-Intel GPUs (AMD, NVIDIA), you'll need different drivers. Intel is most common for VA-API.
+
+### Option 2: Docker/Podman with Hardware Acceleration
+
+If you can't get local FFmpeg working with acceleration, or prefer containerization:
+
+```bash
+# Install Docker (Ubuntu)
+sudo apt update
+sudo apt install docker.io
+sudo usermod -aG docker $USER
+# Log out and back in
+
+# OR install Podman (rootless alternative)
+sudo apt install podman
+
+# Install VA-API host requirements (same as Option 1)
+sudo apt install libva-dev intel-media-va-driver-non-free
+sudo usermod -aG video $USER
+sudo usermod -aG render $USER
+# Log out and back in
+```
+
+`rmbloat` will automatically pull and use the `joedefen/ffmpeg-vaapi-docker:latest` image. For details on this image and additional host setup requirements, see: https://github.com/joedefen/ffmpeg-vaapi-docker
+
+### Option 3: CPU-Only Encoding (Fallback)
+
+If hardware acceleration isn't available or working, `rmbloat` will automatically fall back to CPU encoding. This works but is significantly slower (3-10x depending on hardware).
+
+```bash
+# Just install FFmpeg
+sudo apt update
+sudo apt install ffmpeg
+```
+
+### Verify Your Setup
+
+After setup, test what's working:
+
+```bash
+# Basic detection test (shows what rmbloat found)
+rmbloat --chooser-tests
+
+# Full test with a video file (runs 30s encoding tests)
+rmbloat --chooser-tests /path/to/sample/video.mp4
+```
+
+The output will show which strategies work and recommend the best one. `rmbloat` automatically selects the best available option at runtime.
+
 ### Bloat Metric
 `rmbloat` defines
 ```
@@ -23,31 +126,47 @@ A bloat value of 1000 is roughly that of an aggressively compressed h265 file. I
 
 ## Using `rmbloat`
 ### Starting `rmbloat` from the CLI
-`rmbloat` requires a list of files or directories to scan for conversion candidates.  The full list of options are:
+`rmbloat` requires a list of files or directories to scan for conversion candidates (or uses saved defaults if configured).  The full list of options are:
 ```
-usage: rmbloat.py [-h] [-B] [-b BLOAT_THRESH] [-q QUALITY] [-a {x26*,x265,all}] [-F] [-m MIN_SHRINK_PCT] [-S] [-n] [-s] [-L] [files ...]
+usage: rmbloat.py [-h] [-a {x26*,x265,all}] [-b BLOAT_THRESH] [-F] [-B] [-M]
+                  [-m MIN_SHRINK_PCT] [-q QUALITY] [-t THREAD_CNT] [-S]
+                  [--auto-hr AUTO_HR] [-n]
+                  [-p {auto,system_accel,docker_accel,system_cpu,docker_cpu}]
+                  [-s] [-L] [-T]
+                  [files ...]
 
 CLI/curses bulk Video converter for media servers
 
 positional arguments:
   files                 Video files and recursively scanned folders w Video files
+                        (uses saved defaults if not provided)
 
 options:
   -h, --help            show this help message and exit
-  -B, --keep-backup     if true, rename to ORIG.{videofile} rather than recycle [dflt=False]
-  -b BLOAT_THRESH, --bloat-thresh BLOAT_THRESH
-                        bloat threshold to convert [dflt=1600,min=--save00]
-  -q QUALITY, --quality QUALITY
-                        output quality (CRF) [dflt=28]
   -a {x26*,x265,all}, --allowed-codecs {x26*,x265,all}
                         allowed codecs [dflt=x265]
-  -F, --full-speed      if true, do NOT set nice -n19 and ionice -c3 dflt=False]
+  -b BLOAT_THRESH, --bloat-thresh BLOAT_THRESH
+                        bloat threshold to convert [dflt=1600,min=500]
+  -F, --full-speed      if true, do NOT set nice -n19 and ionice -c3 [dflt=False]
+  -B, --keep-backup     if true, rename to ORIG.{videofile} rather than recycle [dflt=False]
+  -M, --merge-subtitles
+                        Merge external .en.srt subtitle files into output [dflt=False]
   -m MIN_SHRINK_PCT, --min-shrink-pct MIN_SHRINK_PCT
                         minimum conversion reduction percent for replacement [dflt=10]
+  -q QUALITY, --quality QUALITY
+                        output quality (CRF) [dflt=28]
+  -t THREAD_CNT, --thread-cnt THREAD_CNT
+                        thread count for ffmpeg conversions [dflt=4]
   -S, --save-defaults   save the -B/-b/-q/-a/-F/-m/-M options and file paths as defaults
+  --auto-hr AUTO_HR     Auto mode: run unattended for specified hours,
+                        auto-select [X] files and auto-start conversions
   -n, --dry-run         Perform a trial run with no changes made.
+  -p {auto,system_accel,docker_accel,system_cpu,docker_cpu}, --prefer-strategy
+                        FFmpeg strategy preference: auto (default), system_accel,
+                        docker_accel, system_cpu, or docker_cpu
   -s, --sample          produce 30s samples called SAMPLE.{input-file}
   -L, --logs            view the logs
+  -T, --chooser-tests   run tests on ffmpeg choices w 30s cvt of 1st given video
   ```
   You can customize the defaults by setting the desired options and adding the  `--save-defaults` option to write the current choices to its .ini file. This includes saving your video collection root paths, so you don't need to specify them every time you run `rmbloat`. File paths are automatically sanitized: converted to absolute paths, non-existing paths removed, and redundant paths (subdirectories of other saved paths) eliminated. Non-video files in the given files and directories are simply ignored.
 
@@ -141,6 +260,125 @@ Type keys to alter choice:
 * Some keys are to instigate some action (they have no value)
 * Finally, `/` is to set the filter. The filter must be a valid python regular expression, and it is always case insensitive.
 
+## Running rmbloat Under tmux
+
+### Why tmux?
+
+`rmbloat` enforces a **single-instance policy** - only one instance can run at a time. This is by design for resource management: video conversion is CPU and I/O intensive, and running multiple instances would compete for system resources, slowing down all conversions.
+
+Video conversion is often **very long-running** - processing a large video collection can take hours or even days. Using tmux keeps `rmbloat` running persistently without requiring you to stay connected. You can:
+- Start a conversion session and detach
+- Reconnect later to check progress
+- Let conversions run overnight or over weekends
+- Survive SSH disconnections without interrupting the work
+
+### The rmbloatd Wrapper
+
+`rmbloat` includes `rmbloatd`, a tmux wrapper that manages persistent sessions:
+
+```bash
+# Start rmbloat in tmux (fails if already running)
+rmbloatd start
+
+# Start with specific arguments
+rmbloatd start -- --auto-hr 8 /path/to/videos
+
+# Attach to running session
+rmbloatd attach
+
+# Check status
+rmbloatd status
+
+# Stop rmbloat
+rmbloatd stop
+```
+
+**Important**: Only `start` accepts arguments. Use `attach` to connect to an existing session, and `stop` to terminate.
+
+### Auto Mode for Maintenance Runs
+
+Once your video collection is fully converted, you might want periodic "maintenance" runs to handle new arrivals. Auto mode (`--auto-hr`) is perfect for this - it runs unattended for a specified duration, automatically selecting and converting files.
+
+**Example: Weekend maintenance run**
+```bash
+# Run for 48 hours, auto-selecting files needing conversion
+rmbloatd start -- --auto-hr 48
+```
+
+The auto mode will:
+- Automatically mark files for conversion based on your criteria
+- Start conversions without manual intervention
+- Stop cleanly after the specified time limit
+- Use saved defaults for paths if configured with `--save-defaults`
+
+### Scheduled Runs with Cron
+
+For regular maintenance during off-hours, use cron. **Important**: Cron runs with a minimal PATH, so you need to either use absolute paths or set PATH in your crontab.
+
+```bash
+# Edit your crontab
+crontab -e
+
+# Set PATH to include where rmbloatd is installed
+# (adjust path based on where pip installed it - use 'which rmbloatd' to find it)
+PATH=/home/yourusername/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+# Example: Run Friday night at 11 PM for 48 hours (weekend maintenance)
+# First, save your video paths as defaults:
+#   rmbloat --save-defaults /path/to/videos
+0 23 * * 5 rmbloatd start -- --auto-hr 48
+
+# Example: Run every night at 2 AM for 6 hours
+0 2 * * * rmbloatd start -- --auto-hr 6
+
+# Example: Stop at 8 AM (before business hours)
+0 8 * * * rmbloatd stop
+```
+
+**Alternative: Use absolute paths instead of setting PATH**
+```bash
+# Find where rmbloatd is installed
+which rmbloatd
+# Example output: /home/joe/.local/bin/rmbloatd
+
+# Use that absolute path in cron
+0 23 * * 5 /home/joe/.local/bin/rmbloatd start -- --auto-hr 48
+```
+
+**Note**: Cron jobs won't start if `rmbloat` is already running (the single-instance lock prevents this). You can safely have overlapping cron entries - if the previous run is still active, the new `start` will fail harmlessly.
+
+### Using systemd (Alternative)
+
+For systemd-based systems, you can create a timer unit for scheduled runs. This is more verbose than cron but integrates better with system logging:
+
+```bash
+# Create /etc/systemd/system/rmbloat-maintenance.service
+[Unit]
+Description=rmbloat video conversion maintenance
+After=network.target
+
+[Service]
+Type=oneshot
+User=your-username
+ExecStart=/usr/local/bin/rmbloatd start -- --auto-hr 6
+
+# Create /etc/systemd/system/rmbloat-maintenance.timer
+[Unit]
+Description=Run rmbloat maintenance nightly
+
+[Timer]
+OnCalendar=daily
+OnCalendar=02:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
+# Enable the timer
+sudo systemctl enable rmbloat-maintenance.timer
+sudo systemctl start rmbloat-maintenance.timer
+```
+
 ## Under the Covers
 ### File Renaming Strategy
 Files are renamed in one of these forms if they are successfully "parsed":
@@ -161,33 +399,38 @@ If started with `--dry-run`, then conversions are not done, but the log is writt
 ### Performance and Server Impact
 By default, `ffmpeg` conversions are done with both `ionice` and `nice` lowering its priority. This will (in our experience) allow the server to run rather well.  But, your experience may vary.
 
-We attempted to further limit impact by using options to control the number of threads, but none were found that changed anything.  Similiarly, with process affinity, nothing really helped (`ffmpeg` seems to dodge any controls). `systemd` throttles worked, but they decimate the efficiency of `ffmpeg` so much that it seemed better to do without.
+### Hardware Acceleration
+`rmbloat` automatically detects and uses hardware acceleration (VA-API) when available, providing significant performance improvements. The `FfmpegChooser` component:
+- Detects system ffmpeg with VA-API support
+- Falls back to Docker/Podman containers with hardware acceleration if needed
+- Automatically selects the best strategy (system or container, with or without acceleration)
+- Can be manually controlled with the `-p/--prefer-strategy` option
 
-Furthermore, we attempted to use the Intel hardware accellerated h265 processing, but that never worked either.  This may be revisited some day.
+To test your hardware acceleration support:
+```bash
+rmbloat --chooser-tests /path/to/test/video.mp4
+```
+
+This will run 30-second encoding tests with different strategies and report which work best on your system.
+
+### Subtitle Handling
+`rmbloat` intelligently handles subtitle streams to prevent conversion failures:
+
+**Safe Text-Based Subtitles** (kept and transcoded to SRT for MKV compatibility):
+- subrip, ass, ssa, mov_text, webvtt, text
+
+**Unsafe Bitmap Subtitles** (automatically dropped to prevent FFmpeg crashes):
+- dvd_subtitle, hdmv_pgs_subtitle, dvb_subtitle, xsub, and other bitmap formats
+
+During the probe phase, `rmbloat` detects problematic subtitle codecs and automatically excludes them from conversion. Text-based subtitles like `mov_text` (common in MP4 files) are transcoded to SRT format for universal MKV compatibility.
+
+External `.en.srt` subtitle files can be merged into the output with the `-M/--merge-subtitles` option.
 
 ### Videos Removed/Moved While Running
 If videos are removed or moved while `rmbloat` is running, they will only be detected just before starting a conversion (if ever).
 In that case, they are silently removed from the queue (in the Conversion screen), but there is a log of the event.
 Since the conversions may be long-running and unattended, there is no alert other than the log.
 
-### Upgrading to ffmpeg V8 on Ubuntu
-```
-  sudo apt remove ffmpeg
-  sudo add-apt-repository ppa:ubuntuhandbook1/ffmpeg8
-  sudo apt update
-  sudo apt install ffmpeg
-  ffmpeg -version
-  sudo apt install libva-dev intel-media-va-driver-non-free
-  sudo usermod -aG video $USER
-  sudo usermod -aG render $USER
-  sudo apt remove ffmpeg
-  sudo add-apt-repository --remove ppa:ubuntuhandbook1/ffmpeg8
-  sudo add-apt-repository ppa:ubuntuhandbook1/ffmpeg7
-  sudo apt update
-  sudo apt install ffmpeg
-```
-
 # TODO:
-- controls over the status line timeouts should be considered (those are fixed)
-- handling for failed and ineffective conversions
+- Controls over the status line timeouts should be considered (those are currently fixed values)
 

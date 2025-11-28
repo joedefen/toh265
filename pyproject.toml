@@ -35,3 +35,4 @@ text = "MIT"
 
 [project.scripts]
 rmbloat = "rmbloat.rmbloat:main"
+rmbloatd = "rmbloat.rmbloatd:main"
