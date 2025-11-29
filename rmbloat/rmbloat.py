@@ -247,13 +247,15 @@ class FfmpegMon:
         self.return_code: Optional[int] = None
         self.temp_file = None
 
-    def start(self, command_line: list[str]) -> None:
+    def start(self, command_line: list[str], temp_file: Optional[str] = None) -> None:
         """
         Starts the FFmpeg subprocess.
 
         Args:
             command_line: The full FFmpeg command as a list of strings.
+            temp_file: Optional path to the temporary output file (for cleanup on stop).
         """
+        self.temp_file = temp_file
         if self.process:
             raise RuntimeError("FfmpegMon is already monitoring a process.")
 
@@ -780,7 +782,7 @@ class Converter:
 
         # Start the job
         if not self.opts.dry_run:
-            job.ffsubproc.start(ffmpeg_cmd)
+            job.ffsubproc.start(ffmpeg_cmd, temp_file=job.temp_file)
             self.progress_line_mono = time.monotonic()
         return job
 
