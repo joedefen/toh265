@@ -63,27 +63,29 @@ class FfmpegChooser:
         
         # Decide final strategy
         self._decide_strategy()
-        
-        # Print summary
-        if not quiet:
-            self._print_summary()
+
+        # Print summary (handles quiet mode internally)
+        self._print_summary()
     
     def _detect_system_ffmpeg(self):
         """Detect if system ffmpeg exists and test hardware acceleration."""
         self.system_ffmpeg_path = shutil.which('ffmpeg')
-        
+
         if not self.system_ffmpeg_path:
-            print("  ✗ System ffmpeg not found")
+            if not self.quiet:
+                print("  ✗ System ffmpeg not found")
             return
-        
-        print(f"  ✓ System ffmpeg found: {self.system_ffmpeg_path}")
-        
+
+        if not self.quiet:
+            print(f"  ✓ System ffmpeg found: {self.system_ffmpeg_path}")
+
         # Test hardware acceleration
         self.has_system_acceleration = self._test_system_acceleration()
-        if self.has_system_acceleration:
-            print(f"  ✓ System ffmpeg has working hardware acceleration")
-        else:
-            print(f"  ✗ System ffmpeg hardware acceleration not available")
+        if not self.quiet:
+            if self.has_system_acceleration:
+                print(f"  ✓ System ffmpeg has working hardware acceleration")
+            else:
+                print(f"  ✗ System ffmpeg hardware acceleration not available")
     
     def _test_system_acceleration(self):
         """Test if system ffmpeg can use hardware acceleration."""
@@ -137,11 +139,12 @@ class FfmpegChooser:
                 )
                 if result.returncode == 0:
                     self.runtime = 'docker'
-                    print("  ✓ Docker detected and running")
+                    if not self.quiet:
+                        print("  ✓ Docker detected and running")
                     return
             except subprocess.TimeoutExpired:
                 pass
-        
+
         # Try podman
         if shutil.which('podman'):
             try:
@@ -153,12 +156,14 @@ class FfmpegChooser:
                 )
                 if result.returncode == 0:
                     self.runtime = 'podman'
-                    print("  ✓ Podman detected and running")
+                    if not self.quiet:
+                        print("  ✓ Podman detected and running")
                     return
             except subprocess.TimeoutExpired:
                 pass
-        
-        print("  ✗ Neither Docker nor Podman found")
+
+        if not self.quiet:
+            print("  ✗ Neither Docker nor Podman found")
         self.runtime = None
     
     def _ensure_image(self, force_pull):
@@ -182,24 +187,29 @@ class FfmpegChooser:
         
         # Pull if needed or forced
         if force_pull or not image_exists:
-            if force_pull:
-                print(f"  → Force pulling {self.image}...")
-            else:
-                print(f"  → Pulling {self.image}...")
-            
+            if not self.quiet:
+                if force_pull:
+                    print(f"  → Force pulling {self.image}...")
+                else:
+                    print(f"  → Pulling {self.image}...")
+
             pull_cmd = [self.runtime, 'pull', self.image]
             try:
                 result = subprocess.run(pull_cmd, timeout=300)
                 if result.returncode == 0:
-                    print(f"  ✓ Image {self.image} ready")
+                    if not self.quiet:
+                        print(f"  ✓ Image {self.image} ready")
                 else:
-                    print(f"  ✗ Failed to pull image {self.image}")
+                    if not self.quiet:
+                        print(f"  ✗ Failed to pull image {self.image}")
                     self.runtime = None
             except subprocess.TimeoutExpired:
-                print(f"  ✗ Timeout pulling image {self.image}")
+                if not self.quiet:
+                    print(f"  ✗ Timeout pulling image {self.image}")
                 self.runtime = None
         else:
-            print(f"  ✓ Image {self.image} already available locally")
+            if not self.quiet:
+                print(f"  ✓ Image {self.image} already available locally")
     
     def _find_render_device(self):
         """Find the first available render device."""
@@ -217,20 +227,23 @@ class FfmpegChooser:
         """Test if Docker/Podman can use hardware acceleration."""
         if not self.runtime:
             return
-        
+
         # Check if /dev/dri exists
         if not Path("/dev/dri").exists():
-            print("  ✗ /dev/dri not found - hardware acceleration unavailable")
+            if not self.quiet:
+                print("  ✗ /dev/dri not found - hardware acceleration unavailable")
             return
-        
+
         # Find render device
         render_device = self._find_render_device()
         if not render_device:
-            print("  ✗ No render device found in /dev/dri")
+            if not self.quiet:
+                print("  ✗ No render device found in /dev/dri")
             return
-        
-        print(f"  → Testing hardware acceleration with {render_device}...")
-        
+
+        if not self.quiet:
+            print(f"  → Testing hardware acceleration with {render_device}...")
+
         # Test command
         test_cmd = [
             self.runtime, 'run', '--rm',
@@ -245,7 +258,7 @@ class FfmpegChooser:
             '-frames:v', '1',
             '-f', 'null', '-'
         ]
-        
+
         try:
             result = subprocess.run(
                 test_cmd,
@@ -253,15 +266,18 @@ class FfmpegChooser:
                 stderr=subprocess.PIPE,
                 timeout=30
             )
-            
+
             if result.returncode == 0:
                 self.has_docker_acceleration = True
                 self.render_device = render_device
-                print(f"  ✓ Hardware acceleration working in {self.runtime}")
+                if not self.quiet:
+                    print(f"  ✓ Hardware acceleration working in {self.runtime}")
             else:
-                print(f"  ✗ Hardware acceleration test failed in {self.runtime}")
+                if not self.quiet:
+                    print(f"  ✗ Hardware acceleration test failed in {self.runtime}")
         except subprocess.TimeoutExpired:
-            print(f"  ✗ Hardware acceleration test timed out")
+            if not self.quiet:
+                print(f"  ✗ Hardware acceleration test timed out")
     
     def _decide_strategy(self):
         """Decide which FFmpeg to use based on available options and preference."""
@@ -270,10 +286,10 @@ class FfmpegChooser:
         if self.prefer_strategy != 'auto':
             if self._try_strategy(self.prefer_strategy):
                 return
-            
+
             # If preferred strategy not available, fall through to auto
-            if not self.quiet:
-                print(f"  ⚠ Preferred strategy '{self.prefer_strategy}' not available, using auto")
+            # Always warn about this, even in quiet mode
+            print(f"WARNING: Preferred strategy '{self.prefer_strategy}' not available, falling back to auto selection")
         
         # Auto priority (based on real-world performance)
         # Priority 1: System with acceleration (fastest - no container overhead)
@@ -337,20 +353,29 @@ class FfmpegChooser:
     
     def _print_summary(self):
         """Print a summary of the chosen configuration."""
+        # Quiet mode: show minimal or no output
+        if self.quiet:
+            if self.prefer_strategy != 'auto':
+                # User selected a specific strategy - show validation
+                print(f"Strategy: {self.strategy} (selected and validated)")
+            # else: completely silent for auto detection in quiet mode
+            return
+
+        # Full summary for verbose mode
         print("\n" + "="*60)
         print("FFmpeg Configuration Summary")
         print("="*60)
-        
+
         if self.use_docker:
             print(f"Runtime:      {self.runtime.capitalize()} ({self.image})")
         else:
             print(f"Runtime:      System FFmpeg ({self.system_ffmpeg_path})")
-        
+
         if self.use_acceleration:
             print(f"Acceleration: Enabled (VA-API via {self.render_device})")
         else:
             print(f"Acceleration: Disabled (CPU encoding)")
-        
+
         print(f"Strategy:     {self.strategy}")
         print("="*60 + "\n")
 

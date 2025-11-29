@@ -11,12 +11,12 @@ Your video library is likely filled with bloat: older H.264 (AVC), MPEG-4, or hi
 
 Since it is designed for mass conversions on a media server, it often makes sense to start `rmbloat` in a tmux or screen session that out-lives a log-in session (e.g., on a headless server).
 
-### Easy Installation
+## Installation and System Preparation
 To install `rmbloat`, use `pipx rmbloat`. If explanation is needed, see [Install and Execute Python Applications Using pipx](https://realpython.com/python-pipx/).
 
-## System Preparation
+So installing `rmbloat` is simple. And if your system has `ffmpeg` installed with HEVC (H.265) encoding support, you are ready to go, however with agonizingly slow software encoding. The bigger your video collection, the less acceptable software encoding will be.
 
-`rmbloat` requires FFmpeg with HEVC (H.265) encoding support. For best performance, hardware acceleration via VA-API is strongly recommended. You have three options:
+Anyhow, you have three options described below. These instructions are for Ubuntu and other Debian derived distros. For other distros, you must adjust the procedures accordingly.
 
 ### Option 1: Local FFmpeg with Hardware Acceleration (Recommended)
 
@@ -98,7 +98,8 @@ sudo usermod -aG render $USER
 If hardware acceleration isn't available or working, `rmbloat` will automatically fall back to CPU encoding. This works but is significantly slower (3-10x depending on hardware).
 
 ```bash
-# Just install FFmpeg
+# Just install FFmpeg. If v6, we suggest upgrading to v7
+# as described above.
 sudo apt update
 sudo apt install ffmpeg
 ```
@@ -108,7 +109,8 @@ sudo apt install ffmpeg
 After setup, test what's working:
 
 ```bash
-# Basic detection test (shows what rmbloat found)
+# Basic detection test (shows which options you have
+# for conversion to hevc)
 rmbloat --chooser-tests
 
 # Full test with a video file (runs 30s encoding tests)
@@ -128,18 +130,18 @@ A bloat value of 1000 is roughly that of an aggressively compressed h265 file. I
 ### Starting `rmbloat` from the CLI
 `rmbloat` requires a list of files or directories to scan for conversion candidates (or uses saved defaults if configured).  The full list of options are:
 ```
-usage: rmbloat.py [-h] [-a {x26*,x265,all}] [-b BLOAT_THRESH] [-F] [-B] [-M]
-                  [-m MIN_SHRINK_PCT] [-q QUALITY] [-t THREAD_CNT] [-S]
-                  [--auto-hr AUTO_HR] [-n]
+usage: rmbloat.py [-h] [-a {x26*,x265,all}] [-b BLOAT_THRESH] [-F] [-B]
+                  [-M] [-m MIN_SHRINK_PCT]
                   [-p {auto,system_accel,docker_accel,system_cpu,docker_cpu}]
-                  [-s] [-L] [-T]
+                  [-q QUALITY] [-t THREAD_CNT] [-S] [--auto-hr AUTO_HR]
+                  [-n] [-s] [-L] [-T]
                   [files ...]
 
 CLI/curses bulk Video converter for media servers
 
 positional arguments:
-  files                 Video files and recursively scanned folders w Video files
-                        (uses saved defaults if not provided)
+  files                 Video files and recursively scanned folders w Video
+                        files
 
 options:
   -h, --help            show this help message and exit
@@ -147,28 +149,36 @@ options:
                         allowed codecs [dflt=x265]
   -b BLOAT_THRESH, --bloat-thresh BLOAT_THRESH
                         bloat threshold to convert [dflt=1600,min=500]
-  -F, --full-speed      if true, do NOT set nice -n19 and ionice -c3 [dflt=False]
-  -B, --keep-backup     if true, rename to ORIG.{videofile} rather than recycle [dflt=False]
+  -F, --full-speed      if true, do NOT set nice -n19 and ionice -c3
+                        [dflt=False]
+  -B, --keep-backup     if true, rename to ORIG.{videofile} rather than
+                        recycle [dflt=False]
   -M, --merge-subtitles
-                        Merge external .en.srt subtitle files into output [dflt=False]
+                        Merge external .en.srt subtitle files into output
+                        [dflt=False]
   -m MIN_SHRINK_PCT, --min-shrink-pct MIN_SHRINK_PCT
-                        minimum conversion reduction percent for replacement [dflt=10]
+                        minimum conversion reduction percent for
+                        replacement [dflt=10]
+  -p {auto,system_accel,docker_accel,system_cpu,docker_cpu},
+      --prefer-strategy {auto,system_accel,docker_accel,system_cpu,docker_cpu}
+                        FFmpeg strategy preference [dflt=auto]
   -q QUALITY, --quality QUALITY
                         output quality (CRF) [dflt=28]
   -t THREAD_CNT, --thread-cnt THREAD_CNT
                         thread count for ffmpeg conversions [dflt=4]
-  -S, --save-defaults   save the -B/-b/-q/-a/-F/-m/-M options and file paths as defaults
+  -S, --save-defaults   save the -B/-b/-p/-q/-a/-F/-m/-M options and file
+                        paths as defaults
   --auto-hr AUTO_HR     Auto mode: run unattended for specified hours,
                         auto-select [X] files and auto-start conversions
   -n, --dry-run         Perform a trial run with no changes made.
-  -p {auto,system_accel,docker_accel,system_cpu,docker_cpu}, --prefer-strategy
-                        FFmpeg strategy preference: auto (default), system_accel,
-                        docker_accel, system_cpu, or docker_cpu
   -s, --sample          produce 30s samples called SAMPLE.{input-file}
   -L, --logs            view the logs
-  -T, --chooser-tests   run tests on ffmpeg choices w 30s cvt of 1st given video
+  -T, --chooser-tests   run tests on ffmpeg choices w 30s cvt of 1st given
+                        video
   ```
-  You can customize the defaults by setting the desired options and adding the  `--save-defaults` option to write the current choices to its .ini file. This includes saving your video collection root paths, so you don't need to specify them every time you run `rmbloat`. File paths are automatically sanitized: converted to absolute paths, non-existing paths removed, and redundant paths (subdirectories of other saved paths) eliminated. Non-video files in the given files and directories are simply ignored.
+  You can (and should) customize the defaults by setting the desired options and adding the `--save-defaults` option to write the current choices to its .ini file.
+  * Setting the default for `--prefer-strategy` will speed startup once you have tested and found the best strategy.
+  * This includes saving your video collection root paths, so you don't need to specify them every time you run `rmbloat`. File paths are automatically sanitized: converted to absolute paths, non-existing paths removed, and redundant paths (subdirectories of other saved paths) eliminated. Non-video files in the given files and directories are simply ignored.
 
   Candidate video files are probed (with `ffprobe`). If the probe fails, then the candidate is simply ignored. Probing many files can be time consuming, but `rmbloat` keeps a cache of probes so start-up can be fast if most of the candidates have been successfully probed.
 
@@ -182,25 +192,23 @@ The main screens are:
 After scanning/probing the file and folder arguments, the selection screen will open.  In the example below, we have applied a filter pattern, `anqis.gsk`, to select only certain video files.
 
 ```
- [r]setAll [i]nit SP:toggle [g]o ?=help [q]uit /anqis.gsk
-      Picked=3/10  GB=5.6(0)  CPU=736/800%
- CVT  NET BLOAT    RES  CODEC  MINS     GB   VIDEO
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
->[X]  ---  2831^  960p   hevc    50  1.342   Anqis.Gsk.Kbnvw.2020.S01E06.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
- [X]  ---  2796^  960p   hevc    50  1.321   Anqis.Gsk.Kbnvw.2020.S01E05.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
- [X]  ---  2769^  960p   hevc    42  1.116   Anqis.Gsk.Kbnvw.2020.S01E04.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
- [ ]  ---   801   960p   hevc    44  0.333   Anqis.Gsk.Kbnvw.2020.s01e02.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
- [ ]  ---   762   960p   hevc    48  0.350   Anqis.Gsk.Kbnvw.2020.s01e01.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
- [ ]  ---   633   960p   hevc    56  0.338   Anqis.Gsk.Kbnvw.2020.s01e09.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
- [ ]  ---   614   960p   hevc    50  0.289   Anqis.Gsk.Kbnvw.2020.s01e08.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
- [ ]  ---   608   960p   hevc    43  0.246   Anqis.Gsk.Kbnvw.2020.s01e07.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
- [ ]  ---   599   960p   hevc    41  0.234   Anqis.Gsk.Kbnvw.2020.s01e03.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsb
- [ ]  ---    86   960p   hevc    50  0.041   JSTY.Anqis.Gsk.Kbnvw.2020.s01e06.960p.x265.cmf28.recode.mkv ---> /dsqy/
+ [r]setAll [i]nit SP:toggle [g]o ?=help [q]uit /kcjzd
+      Picked=17/123  GB=83.5(0)  CPU=9/800%
+ CVT  NET BLOAT    RES  CODEC  MINS     GB   VIDEO -- Q=28 Shr>=10 MrgSrt
+─────────────────────────────────────────────────────────────────────────────────────
+>[X]  ---  2725^  672p   h264^   89  1.567   Jds Kcjzd 2015 720p Readnfo HDRIP x264 A
+ [X]  ---  2070^ 1080p   h264^   46  0.960   Q.Wcuzbisnl.bx.Kcjzdsu.S03E04.1080p.HBO.
+ [X]  ---  2053^ 1080p   h264^   45  0.936   Q.Wcuzbisnl.bx.Kcjzdsu.S03E06.1080p.HBO.
+ [X]  ---  2052^ 1080p   h264^   46  0.953   Q.Wcuzbisnl.bx.Kcjzdsu.S03E05.1080p.HBO.
+ [X]  ---  2045^ 1080p   h264^   47  0.963   Q.Wcuzbisnl.bx.Kcjzdsu.S03E03.1080p.HBO.
+ [X]  ---  2014^ 1080p   h264^   46  0.923   Q.Wcuzbisnl.bx.Kcjzdsu.S03E07.1080p.HBO.
+ [X]  ---  1735^ 1080p   hevc    51  0.894   Jds.Kcjzdsn.S04E08.1080p.HEVC.x265-MeGus
+   ...
 ```
 **Notes.**
 * `[ ]` denotes a video NOT selected for conversion.
 * `[X]` denotes a video selected for conversion.
-* other CVT values are:
+* other (uncommon normally) CVT values are:
   * `?Pn` - denotes probe failed `n` times (stops at 9)
     * A "hard" failure which cannot be overridden to start conversion
   * `ErN` - denotes conversion failed `N` times (stops at 9)
@@ -209,32 +217,33 @@ After scanning/probing the file and folder arguments, the selection screen will 
     * can manually select for conversion
 * `^` denotes a value over the threshold for conversion. Besides an excessive bloat, the height could be too large, or the codec unacceptable; all depending on the program options.
 * To change whether selected, you can use:
-    * the s/r/i keys to affect potentially every select, and
-    * SPACE to toggle just one; if one is toggled, the cursor moves to the next line so you can toggle sequences very quickly starting at the top.
+  * the s/r/i keys to affect potentially every select, and
+  * SPACE to toggle just one; if one is toggled, the cursor moves to the next line so you can toggle sequences very quickly starting at the top.
 * The videos are always sorted by their current bloat score, highest first.
 * To start converting the selected videos, hit "go" (i.e., the `g` key), and the Conversion Screen replaces this Selection screen.
+  * Some key option choices are summarized after "VIDEO --"; before hitting `z`, reviewing those options is suggested.
 ### Conversion Screen
 The Conversion screen only shows the videos selected for conversion on the Selection screen. There is little that can be done other than monitor progress and abort the conversions (with 'q' key).
 ```
- ?=help q[uit] /anqis.gsk     ToDo=4/9  GB=11.5(-5.0)  CPU=711/800%
-CVT  NET BLOAT    RES  CODEC  MINS     GB   VIDEO
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- OK -74%   762   960p   hevc    48  0.350   Anqis.Gsk.Kbnvw.2020.s01e01.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsbu
- OK -79%   599   960p   hevc    41  0.234   Anqis.Gsk.Kbnvw.2020.s01e03.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsbu
- OK -78%   633   960p   hevc    56  0.338   Anqis.Gsk.Kbnvw.2020.s01e09.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsbu
- OK -79%   614   960p   hevc    50  0.289   Anqis.Gsk.Kbnvw.2020.s01e08.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsbu
- OK -72%   801   960p   hevc    44  0.333   Anqis.Gsk.Kbnvw.2020.s01e02.960p.x265.cmf28.recode.mkv ---> /dsqy/Icwsbu
-IP   ---  2870^  960p   hevc    43  1.158   Anqis.Gsk.Kbnvw.2020.S01E07.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
------> 34.6% | 08:41 | -16:22 | 1.7x | At 14:43/42:32
-[X]  ---  2831^  960p   hevc    50  1.342   Anqis.Gsk.Kbnvw.2020.S01E06.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
-[X]  ---  2796^  960p   hevc    50  1.321   Anqis.Gsk.Kbnvw.2020.S01E05.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
-[X]  ---  2769^  960p   hevc    42  1.116   Anqis.Gsk.Kbnvw.2020.S01E04.1080p.BluRay.10Bit,DDP5.1.H265-d3g.mkv --->
+ ?=help q[uit] /kcjzd     ToDo=16/17  GB=15.9(-1.3)  CPU=630/800%
+CVT  NET BLOAT    RES  CODEC  MINS     GB   VIDEO -- Q=28 Shr>=10 MrgSrt
+─────────────────────────────────────────────────────────────────────────────────────
+ OK -80%   541   672p   hevc    89  0.311   Jds.Kcjzd.2015.672p.x265.cmf28.recode.sb.
+IP   ---  2070^ 1080p   h264^   46  0.960   Q.Wcuzbisnl.bx.Kcjzdsu.S03E04.1080p.HBO.W
+-----> 7.1% | 01:26 | -18:18 | 2.3x | At 03:15/46:05
+[X]  ---  2053^ 1080p   h264^   45  0.936   Q.Wcuzbisnl.bx.Kcjzdsu.S03E06.1080p.HBO.W
+[X]  ---  2052^ 1080p   h264^   46  0.953   Q.Wcuzbisnl.bx.Kcjzdsu.S03E05.1080p.HBO.W
+[X]  ---  2045^ 1080p   h264^   47  0.963   Q.Wcuzbisnl.bx.Kcjzdsu.S03E03.1080p.HBO.W
+[X]  ---  2014^ 1080p   h264^   46  0.923   Q.Wcuzbisnl.bx.Kcjzdsu.S03E07.1080p.HBO.W
+[X]  ---  1735^ 1080p   hevc    51  0.894   Jds.Kcjzdsn.S04E08.1080p.HEVC.x265-MeGust
+ ...
 ```
 **Notes**: You can see:
-* the net change in size, `(-5.0)` GB, and the current size, `11.5` GB.
-* the CPU consumption which is often quite high as in this example.
-* the progress of the singular In Progress conversion including percent complete, time elapsed, time remaining, conversion speed vs viewing speed (1.7x), and the position in the video file.
+* the net change in size, `(-1.3)` GB, and the current size, `15.9` GB.
+* the CPU consumption which is sometimes rathe. high as in this example depending on the effectiveness of hardware acceleration, etc.
+* the progress of the In Progress (IP) conversion including percent complete, time elapsed, time remaining, conversion speed vs viewing speed (2.3x), and the position in the video file.
 * for completed conversions, the reduction in size, the new size, and the new file name of the converted video.
+* typing `q` will abandon any IP conversion and return to the selection screen.
 ### Help Screen
 The Help screen is available from the other screens; enter the Help screen with `?` and exit it with another `?`
 ```
@@ -243,16 +252,16 @@ Navigation:      H/M/L:      top/middle/end-of-page
 j, DOWN:  down one row           $, END:  last row
   Ctrl-u:  half-page up     Ctrl-b, PPAGE:  page up
   Ctrl-d:  half-page down     Ctrl-f, NPAGE:  page down
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────
 Type keys to alter choice:
                     ? - help screen:  off ON
              r - reset all to "[ ]"
-     i - set all to automatic state
+        i - set all automatic state
      SP - toggle current line state
               g - begin conversions
     q - quit converting OR exit app
            p - pause/release screen:  off ON
-                  / - search string:  brave.new
+                  / - search string:  witch
                   m - mangle titles:  off ON
 ```
 * Some keys are for navigation (they allow vi-like navigation).
@@ -430,7 +439,3 @@ External `.en.srt` subtitle files can be merged into the output with the `-M/--m
 If videos are removed or moved while `rmbloat` is running, they will only be detected just before starting a conversion (if ever).
 In that case, they are silently removed from the queue (in the Conversion screen), but there is a log of the event.
 Since the conversions may be long-running and unattended, there is no alert other than the log.
-
-# TODO:
-- Controls over the status line timeouts should be considered (those are currently fixed values)
-

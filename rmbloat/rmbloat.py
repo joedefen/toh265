@@ -477,7 +477,9 @@ class Converter:
         self.state = 'probe' # 'select', 'convert'
         self.job = None
         self.prev_time_encoded_secs = -1
-        self.chooser = FfmpegChooser(force_pull=False, prefer_strategy=opts.prefer_strategy, quiet=False)
+        # Be quiet if user has already selected a specific strategy
+        quiet_chooser = (opts.prefer_strategy != 'auto')
+        self.chooser = FfmpegChooser(force_pull=False, prefer_strategy=opts.prefer_strategy, quiet=quiet_chooser)
         self.probe_cache = ProbeCache(cache_dir_name=cache_dir, chooser=self.chooser)
         self.probe_cache.load()
         self.probe_cache.store()
@@ -1821,10 +1823,11 @@ def main(args=None):
                                files=[],  # Default video collection paths
                                full_speed=False,
                                keep_backup=False,
-                               merge_subtitles=True,
+                               merge_subtitles=False,
                                min_shrink_pct=10,
-                               thread_cnt=4,
+                               prefer_strategy='auto',
                                quality=28,
+                               thread_cnt=4,
                         )
         vals = cfg.vals
         parser = argparse.ArgumentParser(
@@ -1841,7 +1844,7 @@ def main(args=None):
         parser.add_argument('-F', '--full-speed',
                     action='store_false' if vals.full_speed else 'store_true',
                     help='if true, do NOT set nice -n19 and ionice -c3'
-                        + f' dflt={vals.full_speed}]')
+                        + f' [dflt={vals.full_speed}]')
         parser.add_argument('-B', '--keep-backup',
                     action='store_false' if vals.keep_backup else 'store_true',
                     help='if true, rename to ORIG.{videofile} rather than recycle'
@@ -1854,6 +1857,11 @@ def main(args=None):
                     default=vals.min_shrink_pct, type=int,
                     help='minimum conversion reduction percent for replacement'
                     + f' [dflt={vals.min_shrink_pct}]')
+        parser.add_argument('-p', '--prefer-strategy',
+                    choices=FfmpegChooser.STRATEGIES,
+                    default=vals.prefer_strategy,
+                    help=f'FFmpeg strategy preference'
+                        + f' [dflt={vals.prefer_strategy}]')
         parser.add_argument('-q', '--quality',
                     default=vals.quality, type=int,
                     help=f'output quality (CRF) [dflt={vals.quality}]')
@@ -1864,17 +1872,12 @@ def main(args=None):
 
         # run-time options
         parser.add_argument('-S', '--save-defaults', action='store_true',
-                    help='save the -B/-b/-q/-a/-F/-m/-M options and file paths as defaults')
+                    help='save the -B/-b/-p/-q/-a/-F/-m/-M options and file paths as defaults')
         parser.add_argument('--auto-hr', type=float, default=None,
                     help='Auto mode: run unattended for specified hours, '
                          'auto-select [X] files and auto-start conversions')
         parser.add_argument('-n', '--dry-run', action='store_true',
                     help='Perform a trial run with no changes made.')
-        parser.add_argument('-p', '--prefer-strategy',
-                    default='auto',
-                    choices=FfmpegChooser.STRATEGIES,
-                    help='FFmpeg strategy preference: auto (default), system_accel, '
-                         'docker_accel, system_cpu, or docker_cpu')
         parser.add_argument('-s', '--sample', action='store_true',
                     help='produce 30s samples called SAMPLE.{input-file}')
         parser.add_argument('-L', '--logs', action='store_true',
