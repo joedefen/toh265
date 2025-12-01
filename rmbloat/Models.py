@@ -79,7 +79,8 @@ class Job:
 
         # Import here to avoid circular dependency
         # Access Converter.singleton for dry_run status
-        from .rmbloat import Converter, FfmpegMon
+        from .rmbloat import Converter
+        from .FfmpegMon import FfmpegMon
         converter = Converter.singleton
 
         self.progress = 'DRY-RUN' if (converter and converter.opts.dry_run) else 'Started'
@@ -90,7 +91,6 @@ class Job:
         self.total_duration_formatted = self.trim0(
                         str(timedelta(seconds=int(duration_secs))))
 
-        # TODO: After Phase 2, change to: from .FfmpegMon import FfmpegMon
         self.ffsubproc = FfmpegMon()
         self.return_code = None
 
