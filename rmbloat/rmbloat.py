@@ -20,11 +20,11 @@ TODO:
 
 - V3.0
   - merge in missing subtitles
-    ffmpeg -i video.mkv -i video.en.srt 
-    -map 0 -map 1:s:0 
+    ffmpeg -i video.mkv -i video.en.srt
+    -map 0 -map 1:s:0
     -c copy   # Copy all streams, no re-encoding
     -c:s srt   # Only subtitle needs codec
-    -metadata:s:s:0 language=eng 
+    -metadata:s:s:0 language=eng
     video.sb.mkv
 """
 
@@ -33,7 +33,7 @@ TODO:
 # pylint: disable=too-many-return-statements,too-many-instance-attributes
 # pylint: disable=consider-using-with,line-too-long,too-many-lines
 # pylint: disable=too-many-nested-blocks,try-except-raise,line-too-long
-# pylint: disable=too-many-public-methods
+# pylint: disable=too-many-public-methods,invalid-name
 
 import sys
 import os
@@ -50,14 +50,14 @@ import json
 import random
 import curses
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Optional, Union
 # from copy import copy
 from types import SimpleNamespace
 from datetime import timedelta
 import send2trash
 from console_window import ConsoleWindow, OptionSpinner
-from .ProbeCache import ProbeCache
+from .ProbeCache import ProbeCache, Probe
 from .VideoParser import VideoParser, Mangler
 from .IniManager import IniManager
 from .RotatingLogger import RotatingLogger
@@ -103,7 +103,7 @@ def sanitize_file_paths(paths):
     for path in abs_paths:
         # Check if this path is a subdirectory of any already-added path
         is_redundant = False
-        for existing_path in filtered_paths:
+        for existing_path in list(filtered_paths):
             try:
                 # Check if path is relative to existing_path (i.e., is a subdirectory)
                 path.relative_to(existing_path)
@@ -138,13 +138,21 @@ def store_cache_on_exit():
 _dataclass_kwargs = {'slots': True} if sys.version_info >= (3, 10) else {}
 
 @dataclass(**_dataclass_kwargs)
+class PathProbePair:
+    """ TBD """
+    video_file: str
+    probe: Probe
+    do_rename: bool = field(default=False, init=False)
+    standard_name: str = field(default='', init=False)
+
+@dataclass(**_dataclass_kwargs)
 class Vid:
     """ Our main object for the list of video entries """
     # Init parameters
-    basic_ns: SimpleNamespace
-    video_file: str
+    # ppp: PathProbePair
 
     # Fields set from init parameters (via __post_init__)
+    video_file: str = field(init=False)
     filepath: str = field(init=False)
     filebase: str = field(init=False)
     standard_name: str = field(init=False)
@@ -166,19 +174,20 @@ class Vid:
     codec_ok: Optional[bool] = field(default=None, init=False)
     gb: Optional[float] = field(default=None, init=False)
     all_ok: Optional[bool] = field(default=None, init=False)
-    probe0: Optional[SimpleNamespace] = field(default=None, init=False)
-    probe1: Optional[SimpleNamespace] = field(default=None, init=False)
+    probe0: Optional[Probe] = field(default=None, init=False)
+    probe1: Optional[Probe] = field(default=None, init=False)
     basename1: Optional[str] = field(default=None, init=False)
     return_code: Optional[int] = field(default=None, init=False)
     texts: list = field(default_factory=list, init=False)
     ops: list = field(default_factory=list, init=False)
 
-    def __post_init__(self):
+    def post_init(self, ppp):
         """ Custom initialization logic after dataclass __init__ """
-        self.filepath = self.video_file
-        self.filebase = os.path.basename(self.video_file)
-        self.standard_name = self.basic_ns.standard_name
-        self.do_rename = self.basic_ns.do_rename
+        self.video_file = ppp.video_file
+        self.filepath = ppp.video_file
+        self.filebase = os.path.basename(ppp.video_file)
+        self.standard_name = ppp.standard_name
+        self.do_rename = ppp.do_rename
 
 ###
 ### import subprocess
@@ -524,7 +533,7 @@ class Converter:
         self.job = None
         self.prev_time_encoded_secs = -1
         # Be quiet if user has already selected a specific strategy
-        quiet_chooser = (opts.prefer_strategy != 'auto')
+        quiet_chooser = bool(opts.prefer_strategy != 'auto')
         self.chooser = FfmpegChooser(force_pull=False, prefer_strategy=opts.prefer_strategy, quiet=quiet_chooser)
         self.probe_cache = ProbeCache(cache_dir_name=cache_dir, chooser=self.chooser)
         self.probe_cache.load()
@@ -598,7 +607,7 @@ class Converter:
         #               f' {vid.codec} {vid.bloat}b {vid.gb}G')
         return probe
 
-    def already_converted(self, basic_ns, video_file):
+    def append_vid(self, ppp):
         """
         Checks if a video file already meets the updated conversion criteria:
         1. Resolution is at least TARGET_WIDTH x TARGET_HEIGHT.
@@ -612,8 +621,9 @@ class Converter:
             bool: True if the file meets all criteria, False otherwise.
         """
 
-        vid = Vid(basic_ns, video_file)
-        vid.probe0 = self.apply_probe(vid, basic_ns.probe)
+        vid = Vid()
+        vid.post_init(ppp)
+        vid.probe0 = self.apply_probe(vid, ppp.probe)
         self.vids.append(vid)
 
         anomaly = vid.probe0.anomaly # shorthand
@@ -1180,19 +1190,19 @@ class Converter:
                     ops.append(f"ERR: rename '{full_old_path}' '{full_new_path}': {e}")
         return ops
 
-    def process_one_file(self, vid):
+    def process_one_ppp(self, ppp):
         """ Handle just one """
-        input_file = vid.video_file
+        input_file = ppp.video_file
         if not self.is_valid_video_file(input_file):
             return  # Skip to the next file in the loop
 
         # --- File names for the safe replacement process ---
-        do_rename, standard_name = self.standard_name(input_file, vid.probe.height)
+        do_rename, standard_name = self.standard_name(input_file, ppp.probe.height)
 
-        vid.do_rename = do_rename
-        vid.standard_name = standard_name
+        ppp.do_rename = do_rename
+        ppp.standard_name = standard_name
 
-        self.already_converted(vid, input_file)
+        self.append_vid(ppp)
 
     def convert_one_file(self, vid):
         """ TBD """
@@ -1208,7 +1218,7 @@ class Converter:
         dry_run = self.opts.dry_run
         vid = job.vid
         probe = None
-        space_saved_gb = 0.0
+        # space_saved_gb = 0.0
         if success:
             if not dry_run:
                 probe = self.probe_cache.get(job.temp_file)
@@ -1217,7 +1227,7 @@ class Converter:
                     success = True
                     vid.doit = 'ok'
                     net = -20
-                    space_saved_gb = vid.gb * 0.20  # Estimate for dry run
+                    # space_saved_gb = vid.gb * 0.20  # Estimate for dry run
                 else:
                     success = False
                     vid.doit = 'ERR'
@@ -1225,7 +1235,7 @@ class Converter:
             else:
                 net = (vid.gb - probe.gb) / vid.gb
                 net = int(round(-net*100))
-                space_saved_gb = vid.gb - probe.gb
+                # space_saved_gb = vid.gb - probe.gb
             if self.is_allowed_codec(probe) and net > -self.opts.min_shrink_pct:
                 self.probe_cache.set_anomaly(vid.filepath, 'OPT')
                 success = False
@@ -1400,7 +1410,7 @@ class Converter:
 
     def create_video_file_list(self):
         """ TBD """
-        video_files_out = []
+        ppps = []
 
         # Get candidate video file paths
         paths_to_probe, read_pipe = self.get_candidate_video_files(self.opts.files)
@@ -1439,10 +1449,10 @@ class Converter:
 
         results = self.probe_cache.batch_get_or_probe(paths_to_probe)
         for file_path, probe in results.items():
-            ns = SimpleNamespace(video_file=file_path, probe=probe)
-            video_files_out.append(ns)
+            ppp = PathProbePair(file_path, probe)
+            ppps.append(ppp)
 
-        return video_files_out
+        return ppps
 
     def dont_doit(self, vid):
         """ Returns true if prohibited from re-encoding """
@@ -1701,11 +1711,8 @@ class Converter:
                         self.job.vid.doit_auto = self.job.vid.doit
                         self.finish_transcode_job(
                             success=bool(got == 0), job=self.job)
-                        dumped = dict(vars(self.job.vid))
-                        if self.job.vid.probe0:
-                            dumped['probe0'] = vars(dumped['probe0'])
-                        if self.job.vid.probe1:
-                            dumped['probe1'] = vars(dumped['probe1'])
+                        dumped = asdict(self.job.vid)
+                        # asdict() automatically handles nested Probe dataclasses
                         if got == 0:
                             dumped['texts'] = []
 
@@ -1741,15 +1748,9 @@ class Converter:
                         if vid not in gonners:
                             vids.append(vid)
                     self.vids = vids # pruned list
-                    # Convert SimpleNamespace objects to dicts for JSON serialization
-                    gonners_data = []
-                    for v in gonners:
-                        dumped = dict(vars(v))
-                        if v.probe0:
-                            dumped['probe0'] = vars(dumped['probe0'])
-                        if v.probe1:
-                            dumped['probe1'] = vars(dumped['probe1'])
-                        gonners_data.append(dumped)
+                    # Convert Vid dataclass objects to dicts for JSON serialization
+                    # asdict() automatically handles nested Probe dataclasses
+                    gonners_data = [asdict(v) for v in gonners]
                     lg.err('videos disappeared before conversion:\n'
                         + json.dumps(gonners_data, indent=4))
 
@@ -1757,7 +1758,7 @@ class Converter:
                     # Check auto mode exit conditions
                     if self.auto_mode_enabled:
                         # Calculate current stats for vitals report
-                        lines, stats = make_lines()
+                        _, stats = make_lines()
 
                         # Check exit conditions
                         time_exceeded = False
@@ -1832,17 +1833,17 @@ class Converter:
     def main_loop(self):
         """ TBD """
         # sys.argv is the list of command-line arguments. sys.argv[0] is the script name.
-        video_files = self.create_video_file_list()
+        ppps = self.create_video_file_list()
         self.probe_cache.store()
-        video_files.sort(key=lambda vid: vid.probe.bloat, reverse=True)
+        ppps.sort(key=lambda vid: vid.probe.bloat, reverse=True)
 
-        if not video_files:
+        if not ppps:
             print("Usage: rmbloat {options} {video_file}...")
             sys.exit(1)
 
         # --- The main loop change is here ---
-        for vid in video_files:
-            input_file_path_str = vid.video_file
+        for ppp in ppps:
+            input_file_path_str = ppp.video_file
             file_dir, _ = os.path.split(input_file_path_str)
             if not file_dir:
                 file_dir = os.path.abspath(os.path.dirname(input_file_path_str))
@@ -1850,7 +1851,7 @@ class Converter:
             # Use a try...finally block to ensure you always change back.
             try:
                 os.chdir(file_dir)
-                self.process_one_file(vid)
+                self.process_one_ppp(ppp)
 
             except Exception:
                 raise
@@ -1908,7 +1909,7 @@ def main(args=None):
         parser.add_argument('-p', '--prefer-strategy',
                     choices=FfmpegChooser.STRATEGIES,
                     default=vals.prefer_strategy,
-                    help=f'FFmpeg strategy preference'
+                    help='FFmpeg strategy preference'
                         + f' [dflt={vals.prefer_strategy}]')
         parser.add_argument('-q', '--quality',
                     default=vals.quality, type=int,
