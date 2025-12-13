@@ -367,7 +367,58 @@ class JobHandler:
         Returns:
             probe: The probe of the transcoded file (or None if failed/dry_run)
         """
-        # 4. Atomic Swap (Safe Replacement)
+
+        def elaborate_err(vid):
+            """
+            Analyzes FFmpeg output using a severity scoring system to detect 
+            severe stream corruption.
+            """
+            if vid.return_code != 0:
+                CORRUPTION_SEVERITY = {
+                    "corrupt decoded frame": 10,
+                    "illegal mb_num": 9,
+                    "marker does not match f_code": 9,
+                    "damaged at": 8,
+                    "Error at MB:": 7,
+                    "time_increment_bits": 6,
+                    "slice end not reached": 5,
+                    "concealing": 2,  # Low weight to filter out minor issues
+                }
+
+                # Define the threshold for flagging the file as "CORRUPT"
+                # 30-50 is a good starting point to confirm systemic failure.
+                SEVERITY_THRESHOLD = 30
+                total_severity = 0
+                corruption_events = 0
+                
+                for line in vid.texts:
+                    for signal, score in CORRUPTION_SEVERITY.items():
+                        if signal in line:
+                            total_severity += score
+                            corruption_events += 1
+                            # Stop checking other signals for this line once one is found (prevents double-counting)
+                            break 
+                
+                if total_severity >= SEVERITY_THRESHOLD:
+                    vid.texts.append(f"CORRUPT VIDEO: Total Severity Score {total_severity} "
+                        f"from {corruption_events} events. FFmpeg error_code={vid.return_code}")
+
+
+        def old_elaborate_err(vid):
+            """ Analyzes FFmpeg output for signs of stream corruption and appends 
+            a single, descriptive error line to vid.texts if detected.  """
+            # 1. Define the specific error string to look for
+            CORRUPT_FRAME_SIGNAL = "corrupt decoded frame"
+            if vid.return_code != 0:
+                corruption_count = 0
+                for line in vid.texts:
+                    if CORRUPT_FRAME_SIGNAL in line:
+                        corruption_count += 1
+                if corruption_count > 0:
+                    vid.texts.append(f"CORRUPT VIDEO: {corruption_count} corrupt frames, "
+                        f"FFmpeg error_code={vid.return_code}")
+
+        ##################################
         dry_run = self.opts.dry_run
         vid = job.vid
         probe = None
@@ -385,6 +436,7 @@ class JobHandler:
                     success = False
                     vid.doit = 'ERR'
                     net = 0
+                    elaborate_err(vid)
             else:
                 net = (vid.gb - probe.gb) / vid.gb
                 net = int(round(-net*100))

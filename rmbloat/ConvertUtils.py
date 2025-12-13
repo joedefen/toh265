@@ -191,76 +191,45 @@ def standard_name(pathname: str, height: int, quality: int) -> tuple[bool, str]:
             - changed: Whether the name was modified
             - new_name: Standardized filename
     """
+    def finish_name(name, basename):
+        name += f' {height}p x265-cmf{quality} recode'
+        name = re.sub(r'[\s\.\-]+', '.', name)
+        # Ensure name doesn't start with a dot
+        if name.startswith('.'):
+            name = basename.split('.')[0] + name
+        return bool(name != corename), f'{name}.mkv'
 
-    basename = os.path.basename(pathname)
+    corename, _ = os.path.splitext(os.path.basename(pathname))
     parsed = VideoParser(pathname)
     if parsed.is_movie_year() or parsed.is_tv_episode():
         # Only use parsed name if title is not empty
         if not parsed.title or not parsed.title.strip():
-            # Fall through to normal renaming if title is empty
-            pass
+            pass # Fall through to normal renaming if title is empty
         elif parsed.is_tv_episode():
             name = parsed.title
             if parsed.year:
                 name += f' {parsed.year}'
             name += f' s{parsed.season:02d}e{parsed.episode:02d}'
             name += f'-{parsed.episode_hi:02d}' if parsed.episode_hi else ''
-            name += f' {height}p x265-cmf{quality} recode'
-            name = re.sub(r'[\s\.\-]+', '.', name) + '.mkv'
-            # Ensure name doesn't start with a dot
-            if name.startswith('.'):
-                name = basename.split('.')[0] + name
-            return bool(name != basename), name
+            return finish_name(name, corename)
         else:
             name = f'{parsed.title} {parsed.year}'
-            name += f' {height}p x265-cmf{quality} recode'
-            name = re.sub(r'[\s\.\-]+', '.', name) + '.mkv'
-            # Ensure name doesn't start with a dot
-            if name.startswith('.'):
-                name = basename.split('.')[0] + name
-            return bool(name != basename), name
+            return finish_name(name, corename)
 
-    new_basename = basename
-    # Regular expressions for the codecs to be replaced.
+    name = corename
+
+    # Regular expressions for the codecs/resolutions to be replaced.
     # The groups will capture the exact string for case-checking later.
-    pattern = r'\b([xh]\.?264|avc|xvid|divx)\b'
+    purges = r'[xh]\.?264|avc|xvid|divx'
+    purges += r'|\d+[pik]|UHD'
+    pattern = r'([^a-z0-9]' + purges + r')\b'
     regex = re.compile(pattern, re.IGNORECASE)
     end = 0
     while True:
-        match = re.search(regex, new_basename[end:])
+        match = re.search(regex, name[end:])
         if not match:
             break
-        sub = 'X265' if match.group(1).isupper() else 'x265'
         start, end = match.span(1)
-        new_basename = new_basename[:start] + sub + new_basename[end:]
+        name = name[:start] + name[end:]
 
-    pattern = r'\b(\d+[pi]|UHD|4K|2160p|1440p|2K|8K)\b'
-    regex = re.compile(pattern, re.IGNORECASE)
-    height_str = f'{height}p'  # e.g., '1080p'
-
-    end = 0
-    while True:
-        match = re.search(regex, new_basename[end:])
-        if not match:
-            break
-        matched_group = match.group(1)  # The matched string (e.g., '4K' or '720i')
-        start, end = match.span(1)
-
-        if matched_group.lower().endswith(('k', 'hd')):
-            # For '4K', 'UHD', etc. you can't rely on 'height_str' being correct,
-            # so you must manually format the replacement based on the original's case.
-            is_upper = matched_group.isupper()  # Check if '4K' was '4K' or '4k'
-            # The canonical replacement should be f'{height}p'
-            sub = height_str.upper() if is_upper else height_str
-        else:
-            # Standard p/i resolution match (e.g., '720p', '1080i')
-            sub = height_str.upper() if matched_group.isupper() else height_str
-
-        new_basename = new_basename[:start] + sub + new_basename[end:]
-
-    # nail down extension
-    different = bool(new_basename != basename)
-    base, _ = os.path.splitext(new_basename)
-    new_basename = base + '.mkv'
-
-    return different, new_basename
+    return finish_name(name, corename)

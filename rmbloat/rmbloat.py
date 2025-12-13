@@ -385,14 +385,18 @@ class Converter:
         """ TBD """
         def make_lines(doit_skips=None):
             nonlocal self
-            lines, self.visible_vids = [], []
+            lines, self.visible_vids, short_list = [], [], []
+            jobcnt, co_wid = 0, len('CODEC')
             stats = SimpleNamespace(total=0, picked=0, done=0, progress_idx=0,
                                     gb=0, delta_gb=0)
-            jobcnt = 0
 
             for vid in self.todo_vids if self.state == 'convert' else self.vids:
                 if doit_skips and vid.doit in doit_skips:
                     continue
+                short_list.append(vid)
+                co_wid = max(co_wid, len(vid.codec))
+
+            for vid in short_list:
                 basename = vid.basename1 if vid.basename1 else os.path.basename(vid.filepath)
                 dirname = os.path.dirname(vid.filepath)
                 if self.spins.mangle:
@@ -404,7 +408,10 @@ class Converter:
                 co_over = ' ' if vid.codec_ok else '^'
                 mins = int(round(vid.duration / 60))
                 line = f'{vid.doit:>3} {vid.net} {vid.bloat:5}{br_over} {res:>5}{ht_over}'
-                line += f' {vid.codec:>5}{co_over} {mins:>4} {vid.gb:>6.3f}   {basename} ---> {dirname}'
+                line += f' {vid.codec:>{co_wid}}{co_over} {mins:>4} {1024*vid.gb:>6.0f}'
+                line += f'   {basename}'
+                if self.spins.directory:
+                    line += f' ---> {dirname}'
                 if self.spins.search:
                     pattern = self.spins.search
                     if self.spins.mangle:
@@ -439,7 +446,7 @@ class Converter:
             stats.total = len(self.visible_vids) - jobcnt
             stats.gb = round(stats.gb, 1)
             stats.delta_gb = round(stats.delta_gb, 1)
-            return lines, stats
+            return lines, stats, co_wid
 
         def render_screen():
             nonlocal self, spin, win
@@ -447,7 +454,7 @@ class Converter:
                 spin.show_help_nav_keys(win)
                 spin.show_help_body(win)
             else:
-                lines, stats = make_lines()
+                lines, stats, co_wid = make_lines()
                 if self.state == 'select':
                     head = '[r]setAll [i]nit SP:toggle [s]kip [g]o ?=help [q]uit'
                     if self.search_re:
@@ -473,7 +480,7 @@ class Converter:
                     win.add_header(head)
                     # lg.lg(f'{cpu_status=}')
 
-                win.add_header(f'CVT {"NET":>4} {"BLOAT":>5}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"GB":>6}   VIDEO{self.options_suffix}')
+                win.add_header(f'CVT {"NET":>4} {"BLOAT":>{co_wid}}  {"RES":>5}  {"CODEC":>5}  {"MINS":>4} {"MB":>6}   VIDEO{self.options_suffix}')
                 if self.state == 'convert':
                     win.pick_pos = stats.progress_idx
                     win.scroll_pos = stats.progress_idx - win.scroll_view_size + 2
@@ -708,6 +715,7 @@ class Converter:
         spin.add_key('quit', 'q - quit converting OR exit app', category='action',
                      keys={ord('q'), 0x3})
         spin.add_key('freeze', 'p - pause/release screen', vals=[False, True])
+        spin.add_key('directory', 'd - show directory', vals=[False, True])
         spin.add_key('search', '/ - search string',
                           prompt='Set search string, then Enter')
         spin.add_key('mangle', 'm - mangle titles', vals=[False, True])
